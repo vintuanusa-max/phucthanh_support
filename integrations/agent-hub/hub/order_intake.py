@@ -1,0 +1,480 @@
+"""Independent, durable new-message order intake. Never sends public replies."""
+
+import base64
+import json
+import re
+import time
+from decimal import Decimal
+
+import httpx
+
+from hub.evidence_document import select_sources
+from hub.media import decode_image
+from hub.order_policy import eligible, key, sanitize
+from hub.store import event_key
+
+
+def sender_key(message):
+    return message.get("sender_id") or key(message["sender"])
+
+
+def piece_quantities(text):
+    values = re.findall(r"(?<![\w.])(\d{1,3}(?:\.\d{3})+|\d+(?:[.,]\d+)?)\s*(?:c\b|cái\b)", text, re.I)
+    return {
+        Decimal(v.replace(".", "") if re.fullmatch(r"\d{1,3}(?:\.\d{3})+", v) else v.replace(",", "."))
+        for v in values
+    }
+
+
+class OrderIntake:
+    def __init__(self, engine):
+        self.engine = engine
+        self.store = engine.store
+        with self.store.db() as db:
+            db.executescript("""
+                CREATE TABLE IF NOT EXISTS intake_policy (
+                    account TEXT PRIMARY KEY, payload TEXT NOT NULL, updated REAL NOT NULL);
+                CREATE TABLE IF NOT EXISTS intake_runs (
+                    id TEXT PRIMARY KEY, account TEXT NOT NULL, thread_id TEXT NOT NULL,
+                    conversation INTEGER NOT NULL, state TEXT NOT NULL, payload TEXT NOT NULL,
+                    result TEXT NOT NULL DEFAULT '{}', created REAL NOT NULL);
+                CREATE TABLE IF NOT EXISTS intake_sources (
+                    capture_id TEXT PRIMARY KEY, run_id TEXT NOT NULL);
+            """)
+
+    def sync_policy(self, account, config):
+        value = sanitize(config)
+        with self.store.db() as db:
+            db.execute(
+                "INSERT OR REPLACE INTO intake_policy VALUES(?,?,?)",
+                (account, json.dumps(value, ensure_ascii=False), time.time()),
+            )
+
+    def recover(self):
+        with self.store.db() as db:
+            interrupted = db.execute(
+                "SELECT id,conversation,state FROM intake_runs WHERE state IN ('analyzing','sending')"
+            ).fetchall()
+            for row in interrupted:
+                state = "uncertain" if row["state"] == "sending" else "review"
+                db.execute("UPDATE intake_runs SET state=? WHERE id=?", (state, row["id"]))
+        for row in interrupted:
+            self.store.enqueue(
+                row["id"] + ":interrupted",
+                "notice",
+                {
+                    "conversation": row["conversation"],
+                    "text": "CẦN NHÂN VIÊN: Bộ lên đơn bị gián đoạn. Đối chiếu ERP trước khi làm lại: "
+                    + row["id"][:12],
+                },
+            )
+
+    def policy(self, account):
+        with self.store.db() as db:
+            row = db.execute("SELECT * FROM intake_policy WHERE account=?", (account,)).fetchone()
+        if not row or row["updated"] < time.time() - 120:
+            return None  # A disconnected/malformed source config must stop new orders.
+        return json.loads(row["payload"])
+
+    def scope(self, account):
+        return self.engine.settings.inboxes.get(account, {}).get("order_intake", {})
+
+    def accepts(self, message):
+        cfg = self.engine.settings.inboxes.get(message["account"], {})
+        policy = self.policy(message["account"])
+        scope = self.scope(message["account"])
+        return bool(
+            scope.get("enabled_after")
+            and policy is not None
+            and message["timestamp"] >= scope["enabled_after"]
+            and eligible(policy, cfg.get("channel"), message)
+        )
+
+    def media_scope(self, message):
+        # Already queued files must still ingest after a later policy change. The
+        # Windows reader applies policy before downloading; creation rechecks it.
+        scope = self.scope(message["account"])
+        media = self.engine.settings.inboxes.get(message["account"], {}).get("media_capture", {})
+        return any(s.get("enabled_after") and message["timestamp"] >= s["enabled_after"] for s in (scope, media))
+
+    def notify(self, run, reason):
+        self.engine.store.set_owner(run["conversation"], "human")
+        self.engine.effect(
+            run["id"] + ":open", run["conversation"], "status", {"status": "open"}, apply_capture=True
+        )
+        self.engine.note(run["id"] + ":notice", run["conversation"], reason, apply_capture=True)
+
+    def state(self, identity, state, result=None):
+        with self.store.db() as db:
+            db.execute(
+                "UPDATE intake_runs SET state=?,result=? WHERE id=?",
+                (state, json.dumps(result or {}, ensure_ascii=False), identity),
+            )
+
+    def poll(self):
+        """One operation at a time; claims survive restart without replaying writes."""
+        with self.store.db() as db:
+            expired = db.execute(
+                "SELECT * FROM intake_runs WHERE state='waiting_details' "
+                "AND COALESCE(json_extract(payload,'$.first_timestamp'),created)<? ORDER BY created LIMIT 1",
+                (time.time() - 1800,),
+            ).fetchone()
+        if expired:
+            pending_payload = json.loads(expired['payload'])
+            deadline = pending_payload.get('first_timestamp', expired['created']) + 1800
+            with self.store.db() as db:
+                supplements = db.execute(
+                    "SELECT c.payload FROM captures c LEFT JOIN intake_sources s ON s.capture_id=c.id "
+                    "WHERE c.account=? AND c.thread_id=? AND s.capture_id IS NULL "
+                    "AND json_extract(c.payload,'$.timestamp')<=? "
+                    "AND json_extract(c.payload,'$.timestamp')>=?",
+                    (expired['account'], expired['thread_id'], deadline, deadline-1800),
+                ).fetchall()
+            if not any(sender_key(json.loads(r[0])) == pending_payload['sender_key']
+                       and self.accepts(json.loads(r[0])) for r in supplements):
+                self.state(expired['id'], 'review', {'reason': 'Chờ quá 30 phút, chưa đủ thông tin'})
+                self.notify(dict(expired), 'CẦN NHÂN VIÊN: Yêu cầu đã chờ 30 phút nhưng chưa đủ thông tin để lên đơn.')
+                return True
+        with self.store.db() as db:
+            waiting = db.execute(
+                "SELECT * FROM intake_runs WHERE state='evidence_ready' ORDER BY created LIMIT 1"
+            ).fetchone()
+        if waiting:
+            self.submit(dict(waiting))
+            return True
+        for account, cfg in self.engine.settings.inboxes.items():
+            scope = self.scope(account)
+            if not scope.get("enabled_after") or self.policy(account) is None:
+                continue
+            with self.store.db() as db:
+                rows = db.execute(
+                    "SELECT c.id,c.payload FROM captures c JOIN jobs j ON j.id=c.id AND j.state='done' "
+                    "LEFT JOIN intake_sources s ON s.capture_id=c.id "
+                    "WHERE c.account=? AND s.capture_id IS NULL AND json_extract(c.payload,'$.timestamp')>=? "
+                    "ORDER BY json_extract(c.payload,'$.timestamp'),c.rowid LIMIT 200",
+                    (account, scope["enabled_after"]),
+                ).fetchall()
+            available = [(r["id"], json.loads(r["payload"])) for r in rows]
+            for identity, message in available:
+                if not self.accepts(message):
+                    with self.store.db() as db:
+                        db.execute(
+                            "INSERT OR IGNORE INTO intake_sources VALUES(?,?)", (identity, "policy_skip")
+                        )
+                    continue
+                # Only join the same sender in the same group, and never cross activation.
+                batch = [
+                    (i, m)
+                    for i, m in available
+                    if m["thread_id"] == message["thread_id"]
+                    and sender_key(m) == sender_key(message)
+                    and 0 <= m["timestamp"] - message["timestamp"] <= 1800
+                    and self.accepts(m)
+                ]
+                if time.time() - max(m["timestamp"] for _, m in batch) < 120:
+                    continue
+                with self.store.db() as db:
+                    db.execute(
+                        "UPDATE intake_runs SET state='waiting_details' WHERE account=? AND thread_id=? "
+                        "AND state IN ('awaiting_evidence','evidence_ready') "
+                        "AND json_extract(payload,'$.sender_key')=?",
+                        (account, message['thread_id'], sender_key(message)),
+                    )
+                # Recover uncommitted image context when text arrives after the settle window.
+                with self.store.db() as db:
+                    prior = db.execute(
+                        "SELECT c.id,c.payload FROM captures c JOIN intake_sources s ON s.capture_id=c.id "
+                        "JOIN intake_runs r ON r.id=s.run_id AND r.state IN ('ignored','waiting_details') "
+                        "WHERE c.account=? AND c.thread_id=? AND json_extract(c.payload,'$.timestamp')>=? "
+                        "AND json_extract(c.payload,'$.timestamp')<? ORDER BY c.rowid DESC LIMIT 12",
+                        (
+                            account,
+                            message["thread_id"],
+                            max(scope["enabled_after"], message["timestamp"] - 1800),
+                            message["timestamp"],
+                        ),
+                    ).fetchall()
+                context = [(r["id"], json.loads(r["payload"])) for r in prior]
+                context = [
+                    (i, m)
+                    for i, m in context
+                    if sender_key(m) == sender_key(message) and self.accepts(m)
+                ]
+                batch = sorted(
+                    context + batch, key=lambda item: (item[1]["timestamp"], item[1]["message_id"])
+                )
+                mapping = self.store.thread(account=account, thread_id=message["thread_id"])
+                if not mapping:
+                    continue
+                run_id = event_key("order-intake-v1", *[i for i, _ in batch])
+                run = dict(
+                    id=run_id,
+                    account=account,
+                    thread_id=message["thread_id"],
+                    conversation=mapping["conversation"],
+                )
+                payload = {
+                    "messages": [m["message_id"] for _, m in batch],
+                    "group_name": message["display_name"],
+                    "sender": message["sender"],
+                    "sender_key": sender_key(message),
+                    "first_timestamp": min(m['timestamp'] for _, m in batch),
+                }
+                with self.store.db() as db:
+                    db.execute("BEGIN IMMEDIATE")
+                    db.execute(
+                        "INSERT INTO intake_runs(id,account,thread_id,conversation,state,payload,created) "
+                        "VALUES(?,?,?,?,'analyzing',?,?)",
+                        (
+                            run_id,
+                            account,
+                            message["thread_id"],
+                            mapping["conversation"],
+                            json.dumps(payload, ensure_ascii=False),
+                            time.time(),
+                        ),
+                    )
+                    db.executemany(
+                        "DELETE FROM intake_sources WHERE capture_id=? AND run_id IN "
+                        "(SELECT id FROM intake_runs WHERE state IN ('ignored','waiting_details'))",
+                        [(i,) for i, _ in context],
+                    )
+                    db.executemany("INSERT INTO intake_sources VALUES(?,?)", [(i, run_id) for i, _ in batch])
+                    db.execute("UPDATE intake_runs SET state='superseded' WHERE state='waiting_details' "
+                               "AND id NOT IN (SELECT run_id FROM intake_sources)")
+                try:
+                    self.analyze(run, payload, batch)
+                except Exception as exc:
+                    self.state(run_id, "review", {"reason": type(exc).__name__})
+                    reason = "Lỗi phân tích/kiểm tra dữ liệu"
+                    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in (409, 422):
+                        reason = (
+                            "Tên nhóm chưa khớp duy nhất khách ERP; API yêu cầu dạng Tên khách - phần còn lại"
+                        )
+                    elif isinstance(exc, ValueError):
+                        reason = str(exc)
+                    self.notify(
+                        run,
+                        "CẦN NHÂN VIÊN: Chưa lên đơn tự động. " + reason + ". Mã đối chiếu " + run_id[:12],
+                    )
+                return True
+        return False
+
+    def analyze(self, run, payload, batch):
+        messages = [m for _, m in batch]
+        for m in messages:
+            quote = m.get('quoted_image')
+            if quote and (not quote['resolved'] or not m['images']):
+                raise ValueError('Quoted image unavailable; staff must verify original')
+        text = "\n".join(m["text"] for m in messages)
+        if any(m.get('images') or m.get('assets') for m in messages) and not re.search(r'\d', text):
+            self.state(run['id'], 'waiting_details', {'reason': 'Chờ khách bổ sung số lượng'})
+            return
+        if not re.search(r"\d|đặt|đơn|in\b|mẫu|làm|lấy|order", key(text)) and not any(
+            m["images"] for m in messages
+        ):
+            self.state(run["id"], "ignored")
+            return
+        if len(messages) > 12 or any(
+            m["attachments"] or any(a["state"] != "ready" for a in m.get("assets", [])) for m in messages
+        ):
+            raise ValueError("Incomplete media or oversized message batch")
+        with self.store.db() as db:
+            previous = db.execute(
+                "SELECT 1 FROM intake_runs WHERE account=? AND thread_id=? AND id<>? "
+                "AND state NOT IN ('ignored','review','cancelled','waiting_details','superseded') AND created>? "
+                "AND json_extract(payload,'$.sender_key')=?",
+                (run["account"], run["thread_id"], run["id"], time.time() - 1800, payload["sender_key"]),
+            ).fetchone()
+        if previous:
+            raise ValueError("Possible continuation or correction of an earlier order")
+        images = []
+        image_ids = []
+        for n, m in enumerate(messages, 1):
+            if m["images"]:
+                images.extend(self.store.images(m["images"]))
+                image_ids.append(n)
+        if len(images) > 2:
+            raise ValueError("More than two order images requires review")
+        decision = self.engine.agent.decide(
+            {
+                "order_intake_only": True,
+                "messages": [
+                    {"id": n, "text": m["text"], "assets": m.get("assets", []),
+                     "quoted_image": m.get("quoted_image")}
+                    for n, m in enumerate(messages, 1)
+                ],
+                "latest_message_id": len(messages),
+                "latest_message": messages[-1]["text"],
+                "image_message_ids": image_ids,
+                "images": images,
+                "already_ordered_message_ids": [],
+            }
+        )
+        if decision.action == "reply":
+            self.state(run["id"], "waiting_details" if images else "ignored")
+            return
+        if decision.action != "draft_order" or not decision.orders:
+            self.state(run["id"], "waiting_details", {"reason": decision.reason})
+            return
+        ids = set(decision.source_message_ids)
+        if not ids or not ids <= set(range(1, len(messages) + 1)) or len(messages) not in ids:
+            raise ValueError("Invalid order source IDs")
+        # Require a literal product code in the source text. OCR-only codes need review.
+        for line in decision.orders:
+            if line.ma_san_pham and not re.search(
+                r"(?<!\w)" + re.escape(key(line.ma_san_pham)) + r"(?!\w)", key(text)
+            ):
+                raise ValueError("Product code is not present in source text")
+            if re.search(r"\.(pdf|zip|png|jpg|ai|cdr|psd)\b", key(line.ma_san_pham)):
+                raise ValueError("Design filename cannot be a product code")
+            numbers = {
+                Decimal(n.replace(",", ".")) for n in re.findall(r"(?<![\w.])\d+(?:[.,]\d+)?(?!\w)", text)
+            }
+            explicit_pieces = piece_quantities(text)
+            numbers.update(explicit_pieces)
+            if (explicit_pieces and line.so_luong not in explicit_pieces) or (
+                not images and line.so_luong not in numbers
+            ):
+                raise ValueError("Số lượng không xuất hiện trong tin nguồn; cần nhân viên kiểm tra")
+        if any(not self.accepts(m) for m in messages):
+            raise ValueError("Group policy changed during analysis")
+        # Existing ERP API must resolve the actual group before creation; never use its unknown-customer fallback.
+        binding = self.engine.customer_mappings.get(run["account"], run["thread_id"])
+        if binding:
+            self.engine.erp.validate_customer_id(binding["customer_id"])
+            payload["customer_binding"] = binding
+        else:
+            if self.engine.settings.inboxes[run['account']]['channel'] == 'whatsapp':
+                raise ValueError('Nhóm WhatsApp chưa có ánh xạ ID khách ERP; cần nhân viên xác nhận')
+            self.engine.erp.observe_group(payload["group_name"])
+        notes = "\n".join(f"Tin {m['message_id']} ({m['sender']}): {m['text']}" for m in messages)
+        orders = [line.model_dump(mode="json") for line in decision.orders]
+        for line in orders:
+            line["ghi_chu_mau_do"] = (line["ghi_chu_mau_do"] + "\n" + notes)[:4000]
+        payload["orders"] = orders
+        payload["request_id"] = ("chatwoot-id:" if binding else "chatwoot-intake:") + run["id"]
+        with self.store.db() as db:
+            db.execute(
+                "UPDATE intake_runs SET state='awaiting_evidence',payload=? WHERE id=?",
+                (json.dumps(payload, ensure_ascii=False), run["id"]),
+            )
+
+    def evidence_request(self, account):
+        with self.store.db() as db:
+            row = db.execute(
+                "SELECT * FROM intake_runs WHERE account=? AND state='awaiting_evidence' "
+                "ORDER BY created LIMIT 1",
+                (account,),
+            ).fetchone()
+            if not row:
+                return None
+            payload = json.loads(row["payload"])
+            messages = select_sources(db, account, row["thread_id"], payload["messages"])
+        return {"id": row["id"], "messages": messages, "reference": "INTAKE-" + row["id"][:16]}
+
+    def evidence_saved(self, account, identity, data):
+        if data.get("error"):
+            with self.store.db() as db:
+                row = db.execute(
+                    "SELECT * FROM intake_runs WHERE id=? AND account=? AND state='awaiting_evidence'",
+                    (identity, account),
+                ).fetchone()
+            if not row:
+                raise ValueError("No pending evidence")
+            self.state(identity, "review", {"reason": "NAS evidence failed"})
+            self.notify(
+                dict(row), "CẦN NHÂN VIÊN: Chưa tạo đơn vì không lưu được bằng chứng NAS hoặc PNG quá dài."
+            )
+            return
+        image = decode_image({"mime_type": "image/png", "data": data["image_base64"]})
+        if len(image) > 5_000_000 or not image.startswith(b"\x89PNG\r\n\x1a\n"):
+            raise ValueError("Invalid evidence PNG")
+        with self.store.db() as db:
+            row = db.execute(
+                "SELECT * FROM intake_runs WHERE id=? AND account=?", (identity, account)
+            ).fetchone()
+            if not row or row["state"] not in {"awaiting_evidence", "evidence_ready"}:
+                raise ValueError("Evidence is not pending")
+            payload = json.loads(row["payload"])
+            if set(data["source_message_ids"]) != set(payload["messages"]):
+                raise ValueError("Evidence source mismatch")
+            archive = self.engine.settings.inboxes[account].get("archive_root", "").rstrip("\\/")
+            if (
+                not archive
+                or not data["directory"].startswith(archive + "\\")
+                or ".." in data["directory"].split("\\")
+            ):
+                raise ValueError("Evidence must be saved under the configured NAS root")
+            payload["image_base64"] = base64.b64encode(image).decode()
+            payload["nas_evidence"] = data["directory"]
+            db.execute(
+                "UPDATE intake_runs SET state='evidence_ready',payload=? WHERE id=?",
+                (json.dumps(payload, ensure_ascii=False), identity),
+            )
+
+    def submit(self, run):
+        payload = json.loads(run["payload"])
+        try:
+            with self.store.db() as db:
+                messages = select_sources(db, run["account"], run["thread_id"], payload["messages"])
+                newer = db.execute(
+                    "SELECT payload FROM captures WHERE account=? AND thread_id=? "
+                    "AND json_extract(payload,'$.timestamp')>?",
+                    (run['account'], run['thread_id'], max(m['timestamp'] for m in messages)),
+                ).fetchall()
+            if any(sender_key(json.loads(r[0])) == payload['sender_key'] and self.accepts(json.loads(r[0])) for r in newer):
+                self.state(run['id'], 'waiting_details', {'reason': 'Tin mới đến trước lúc ghi ERP; cần tổng hợp lại'})
+                return
+            if not self.engine.settings.erp_write or any(not self.accepts(m) for m in messages):
+                raise ValueError("ERP disabled or policy changed")
+            binding = self.engine.customer_mappings.get(run["account"], run["thread_id"])
+            if binding != payload.get("customer_binding"):
+                raise ValueError("Ánh xạ khách đã thay đổi; cần nhân viên đối chiếu đề xuất cũ")
+            if binding:
+                self.engine.erp.validate_customer_id(binding["customer_id"])
+            else:
+                self.engine.erp.observe_group(payload["group_name"])
+        except Exception as exc:
+            self.state(run["id"], "review", {"reason": type(exc).__name__})
+            self.notify(
+                run, "CẦN NHÂN VIÊN: Đơn đã phân tích nhưng chưa ghi ERP; kiểm tra cấu hình/khách hàng."
+            )
+            return
+        body = {k: payload[k] for k in ("request_id", "group_name", "orders", "image_base64")}
+        body["source"] = self.engine.settings.inboxes[run["account"]]["channel"]
+        if binding:
+            body.update(
+                customer_id=binding["customer_id"], group_id=run["thread_id"], source_account=run["account"]
+            )
+        for line in body["orders"]:
+            line["ghi_chu_mau_do"] = (
+                "Bằng chứng NAS: " + payload["nas_evidence"] + "\n" + line["ghi_chu_mau_do"]
+            )[:4000]
+        # Freeze the exact external request for reconciliation before any network write.
+        payload["submitted_payload"] = body
+        with self.store.db() as db:
+            claimed = db.execute(
+                "UPDATE intake_runs SET state='sending',payload=? WHERE id=? AND state='evidence_ready'",
+                (json.dumps(payload, ensure_ascii=False), run["id"]),
+            )
+            if claimed.rowcount != 1:
+                return
+        try:
+            result = self.engine.erp.create_order(body)
+        except Exception as exc:
+            self.state(run["id"], "uncertain", {"reason": type(exc).__name__})
+            self.notify(
+                run,
+                "CẦN NHÂN VIÊN: ERP chưa xác nhận kết quả; không tự gửi lại để tránh trùng đơn. "
+                + run["id"][:12],
+            )
+            return
+        self.state(run["id"], "created", result)
+        codes = ", ".join(str(o.get("ma_don_hang", o.get("id", ""))) for o in result["orders"])
+        self.engine.note(
+            run["id"] + ":created",
+            run["conversation"],
+            "Đã tạo đơn ERP trạng thái Lên mẫu: " + codes + "\nBằng chứng NAS: " + payload["nas_evidence"],
+            apply_capture=True,
+        )

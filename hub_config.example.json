@@ -1,0 +1,8 @@
+{
+  "enabled": false,
+  "hub_url": "http://127.0.0.1:8095",
+  "token": "",
+  "database": "C:\\PhucThanhData\\chatwoot-relay.sqlite3",
+  "channel_accounts": {"zalo": "zalo-personal-1", "whatsapp": "whatsapp-personal-1"},
+  "whatsapp_delivery_enabled": false
+}

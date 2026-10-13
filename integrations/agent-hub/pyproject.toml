@@ -1,0 +1,43 @@
+[project]
+name = "phucthanh-agent-hub"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.143.0",
+    "httpx>=0.28.1",
+    "pillow>=12.3.0",
+    "uvicorn>=0.54.0",
+]
+
+[dependency-groups]
+desktop = [
+    "apsw>=3.53.4.0",
+    "cryptography>=50.0.2",
+    "pillow>=12.3.0",
+    "pillow-jxl-plugin>=1.3.8",
+    "psutil>=7.2.2",
+]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.17.0",
+]
+whatsapp = [
+    "ccl-chromium-reader",
+    "ccl-simplesnappy",
+    "pycryptodome==3.24.1",
+    "pywin32==312 ; sys_platform == 'win32'",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+
+[tool.uv.sources]
+ccl-chromium-reader = { git = "https://github.com/cclgroupltd/ccl_chromium_reader.git", rev = "ef840de30221c4d65bc96d2f4d9057e9ef2f526d" }
+ccl-simplesnappy = { git = "https://github.com/cclgroupltd/ccl_simplesnappy.git", rev = "3d085230baa8c46cf2090ebba29bf6e8eab31087" }

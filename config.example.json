@@ -1,0 +1,13 @@
+{
+  "zalo_internal_members": [],
+  "zalo_skip_groups": [],
+  "zalo_disable_reply_groups": [],
+  "zalo_default_receive_messages": true,
+  "zalo_default_auto_order": true,
+  "zalo_contact_rules": [],
+  "whatsapp_internal_members": [],
+  "whatsapp_skip_groups": [],
+  "whatsapp_disable_reply_groups": [],
+  "design_file_extensions": [".ai", ".pdf", ".psd", ".psb", ".cdr", ".eps", ".svg"],
+  "gemini_api_key": ""
+}
