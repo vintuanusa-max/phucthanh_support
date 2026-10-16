@@ -87,3 +87,14 @@ def test_two_channels_never_resend_success_when_other_uncertain(tmp_path):
  assert restarted.pending_destinations('wa-1')==[]
  with store.db() as db:
   assert dict(db.execute('SELECT account,state FROM print_deliveries').fetchall())=={'wa-1':'confirmed','zalo-1':'uncertain'}
+
+def test_reprint_with_followup_photo_and_negative_cases():
+ from hub.print_approval import is_reprint,select_reprint
+ c=msg('c',100,'Cả nhà ơi bù cho e 60 cái kết mầu rêu ạ')
+ a=msg('a',120,images=['x'])
+ assert is_reprint(c['text'])
+ assert [m['message_id'] for m in select_reprint(c,[c,a])]==['c','a']
+ for text in ['chưa in bù 60 cái','in bù 60 cái?','bù cho em','in 60 cái']:
+  assert not is_reprint(text)
+ with pytest.raises(ValueError):select_reprint(c,[c,msg('a',120,images=['x'],author='other')])
+ with pytest.raises(ValueError):select_reprint(c,[c,msg('a',1000,images=['x'])])

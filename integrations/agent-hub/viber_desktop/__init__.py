@@ -1,0 +1,1 @@
+"""Scoped Viber Desktop integration."""

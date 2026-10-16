@@ -30,6 +30,14 @@ def safe_name(value):
     return value
 
 
+def customer_folder(display_name):
+    """Existing W: convention: first group prefix, unaccented uppercase."""
+    prefix=re.split(r'[-–—]',display_name,1)[0].strip().replace('Đ','D').replace('đ','d')
+    prefix=''.join(c for c in unicodedata.normalize('NFD',prefix) if unicodedata.category(c)!='Mn')
+    prefix=' '.join(''.join(c for c in prefix if c.isascii() and (c.isalnum() or c.isspace())).split()).upper()
+    return safe_name(prefix or 'NHOM')
+
+
 class Vault:
     def __init__(self, home, root):
         self.home, self.root = Path(home), Path(root)
@@ -40,6 +48,7 @@ class Vault:
             db.executescript("""
               PRAGMA journal_mode=WAL;
               CREATE TABLE IF NOT EXISTS groups (id TEXT PRIMARY KEY, folder TEXT NOT NULL UNIQUE);
+              CREATE TABLE IF NOT EXISTS customer_folders(id TEXT PRIMARY KEY,folder TEXT NOT NULL);
               CREATE TABLE IF NOT EXISTS assets(id TEXT PRIMARY KEY,payload TEXT NOT NULL,state TEXT NOT NULL DEFAULT 'queued',
                 result TEXT NOT NULL DEFAULT '{}',error TEXT NOT NULL DEFAULT '',attempts INTEGER NOT NULL DEFAULT 0,next_try REAL NOT NULL DEFAULT 0);
               UPDATE assets SET state='queued' WHERE state='working';
@@ -139,13 +148,11 @@ class Vault:
     def folder(self, payload):
         identity = payload["account"] + ":" + payload["thread_id"]
         with self.db() as db:
-            old = db.execute("SELECT folder FROM groups WHERE id=?", (identity,)).fetchone()
+            old = db.execute("SELECT folder FROM customer_folders WHERE id=?", (identity,)).fetchone()
             if old:
                 return old[0]
-            name = safe_name(payload["display_name"])
-            if name.casefold() in {r[0].casefold() for r in db.execute("SELECT folder FROM groups")}:
-                name += "__" + hashlib.sha256(identity.encode()).hexdigest()[:8]
-            db.execute("INSERT INTO groups VALUES(?,?)", (identity, name))
+            name = customer_folder(payload['display_name'])
+            db.execute("INSERT INTO customer_folders VALUES(?,?)", (identity, name))
             return name
 
     def process(self, key, payload):

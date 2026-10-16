@@ -30,7 +30,7 @@ def system(tmp_path):
 
 def test_quantity_change_notifies_two_channels_once(tmp_path):
     store,engine,add=system(tmp_path)
-    add('change','Sửa số lượng thành 150 cái nhé')
+    add('change','Sửa số lượng đơn vừa chốt thành 150 cái nhé')
     assert engine.print_approvals.poll()
     assert not engine.print_approvals.poll()
     job=engine.print_approvals.evidence_request('wa-1')
@@ -47,12 +47,12 @@ def test_quantity_change_notifies_two_channels_once(tmp_path):
 
 def test_photo_change_then_second_change_preserves_versions(tmp_path):
     store,engine,add=system(tmp_path)
-    add('new-photo','Đổi mẫu này nhé',[IMAGE])
+    add('new-photo','Đổi mẫu vừa duyệt này nhé',[IMAGE])
     assert engine.print_approvals.poll()
     first=engine.print_approvals.evidence_request('wa-1')
     assert 'CHƯA TỰ COI LÀ ĐÃ DUYỆT' in first['notice']
     assert len([m for m in first['messages'] if m['images']])==2
-    add('quantity','Giảm còn 80 cái',offset=50)
+    add('quantity','Giảm đơn vừa chốt còn 80 cái',offset=50)
     assert engine.print_approvals.poll()
     with store.db() as db:
         rows=[json.loads(r[0]) for r in db.execute("SELECT payload FROM print_approvals WHERE json_extract(payload,'$.kind')='amendment' ORDER BY created")]
@@ -68,24 +68,23 @@ def test_no_change_for_thanks_cross_group_or_prebaseline(tmp_path):
     assert not engine.print_approvals.poll()
 
 
-def test_new_photo_alone_and_other_customer_warn_instead_of_replace(tmp_path):
+def test_new_photo_alone_and_other_customer_are_not_changes(tmp_path):
     store,engine,add=system(tmp_path)
     add('new','',[IMAGE],sender='another-customer')
-    assert engine.print_approvals.poll()
-    job=engine.print_approvals.evidence_request('wa-1')
-    assert 'CHƯA XÁC ĐỊNH là thay mẫu hay đơn mới' in job['notice']
-    assert 'CHƯA XÁC ĐỊNH CHẮC HỒ SƠ' in job['notice']
+    assert not engine.print_approvals.poll()
+    assert engine.print_approvals.evidence_request('wa-1') is None
+
 
 
 def test_change_notice_rendered_and_kept_separate_from_customer_text(tmp_path):
     from hub.evidence_document import render_document
     store,engine,add=system(tmp_path)
-    add('change','Sửa số lượng thành 150 cái nhé')
+    add('change','Sửa số lượng đơn vừa chốt thành 150 cái nhé')
     assert engine.print_approvals.poll()
     job=engine.print_approvals.evidence_request('wa-1')
     _,manifest,pages=render_document(job['messages'],job['reference'],job['notice'],job['new_message_ids'])
     assert manifest['system_notice']==job['notice']
-    assert manifest['messages'][-1]['text']=='Sửa số lượng thành 150 cái nhé'
+    assert manifest['messages'][-1]['text']=='Sửa số lượng đơn vừa chốt thành 150 cái nhé'
     assert pages[0].startswith(b'\x89PNG')
     (tmp_path/'change-preview.png').write_bytes(pages[0])
 
@@ -111,13 +110,25 @@ def test_large_picture_falls_back_to_explicit_text_warning(monkeypatch,tmp_path)
     assert 'ẢNH KHÔNG ĐÍNH KÈM' in calls[-1][1]['notice']
     assert posted[0]['source_message_ids']==['new'] and posted[0]['image_base64']
 
-def test_quantity_sent_as_later_numeric_message_is_not_lost(tmp_path):
+def test_number_without_order_reference_is_not_change(tmp_path):
     store,engine,add=system(tmp_path)
-    add('change','Sửa số lượng nhé',offset=100)
-    assert engine.print_approvals.poll()
     add('number','150',offset=40)
-    assert engine.print_approvals.poll()
+    assert not engine.print_approvals.poll()
+
+
+def test_a_thuc_new_order_not_attached_to_previous_approval(tmp_path):
+    store,engine,add=system(tmp_path)
+    add('file','[File Zalo: in nón x6.cdr]',offset=200)
+    add('new','Lm mẫu nón kết in 2 vt @Thôngg',[IMAGE],offset=180)
+    add('next','Làm mẫu này @Thôngg',offset=160)
+    add('size','Ngang 10cm',offset=150)
+    add('qty','1.000c',offset=140)
+    assert not engine.print_approvals.poll()
     with store.db() as db:
-        rows=[json.loads(r[0]) for r in db.execute("SELECT payload FROM print_approvals WHERE json_extract(payload,'$.kind')='amendment' ORDER BY created")]
-    assert len(rows)==2 and '150' in rows[-1]['notice']
-    assert rows[-1]['new_message_ids']==['number']
+        assert db.execute('SELECT count(*) FROM print_change_sources').fetchone()[0]==0
+
+
+def test_unanchored_correction_not_guessed(tmp_path):
+    store,engine,add=system(tmp_path)
+    add('change','Sửa số lượng thành 150 cái')
+    assert not engine.print_approvals.poll()

@@ -22,6 +22,8 @@ def fresh_trial_message(cfg, thread, message):
 
 def ai_delivery(settings, cfg, message, thread):
     scope = trial(cfg, thread)
+    agentic = cfg.get("agentic", {})
+    scope = scope or (agentic.get("enabled") and agentic.get("public_replies") and thread in agentic.get("allowed_groups", []))
     marker = (message.get("content_attributes") or {}).get("phucthanh") or {}
     sender = message.get("sender") or {}
     return bool(

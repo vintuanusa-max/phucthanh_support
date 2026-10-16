@@ -51,7 +51,7 @@ class Settings:
                 raise ValueError(f"{name} must contain at least 32 characters")
         ids = []
         for account, entry in self.inboxes.items():
-            if not account or entry.get("channel") not in {"zalo", "whatsapp", "native"}:
+            if not account or entry.get("channel") not in {"zalo", "whatsapp", "viber", "native"}:
                 raise ValueError("Invalid inbox configuration")
             ids.append(int(entry["inbox_id"]))
             scopes = entry.get("ai_trials", {})

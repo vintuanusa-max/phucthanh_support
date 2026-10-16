@@ -281,3 +281,90 @@ def test_ai_cannot_invent_code_or_text_quantity(intake, code, qty):
     )
     engine.order_intake.poll()
     assert rows(store)[0]["state"] == "review" and not engine.erp.calls
+
+
+def test_timeout_reads_image_once_and_keeps_original_request(intake):
+    settings,store,engine=intake
+    settings.inboxes['wa-1']['order_intake']['enabled_after']=time.time()-3000
+    capture(store,'image-qty',text='Ảnh mẫu',images=[IMAGE],timestamp=time.time()-1900)
+    engine.order_intake.poll()
+    original=rows(store)[0]['id']
+    engine.agent.decision=IntakeDecision(action='draft_order',source_message_ids=[1],orders=[{'ma_san_pham':None,'so_luong':100,'ghi_chu_mau_do':'Ảnh tin 1 ghi SL 100 cái'}])
+    assert engine.order_intake.poll()
+    run=rows(store)[0]
+    assert run['id']==original and run['state']=='awaiting_evidence'
+    assert json.loads(run['payload'])['image_timeout_attempted'] is True
+    assert engine.agent.context['image_quantity_after_wait'] is True
+    assert len(engine.agent.context['images'])==1
+    assert not engine.erp.calls
+
+
+def test_timeout_unreadable_image_handoff_no_repeat(intake):
+    settings,store,engine=intake
+    settings.inboxes['wa-1']['order_intake']['enabled_after']=time.time()-3000
+    capture(store,'image-qty',text='Ảnh mẫu',images=[IMAGE],timestamp=time.time()-1900)
+    engine.order_intake.poll()
+    engine.agent.decision=IntakeDecision(action='handoff',reason='Không đọc rõ số lượng')
+    assert engine.order_intake.poll()
+    assert rows(store)[0]['state']=='review'
+    assert not engine.order_intake.poll()
+    assert not engine.erp.calls
+
+@pytest.mark.parametrize('old_state,frozen,reply,joined',[
+ ('review',False,'Ok làm giúp em',True),
+ ('review',False,'giá bao nhiêu?',False),
+ ('review',False,'chưa ok',False),
+ ('created',False,'Ok',False),
+ ('uncertain',True,'Ok',False),
+ ('review',True,'Ok',False),
+])
+def test_confirmation_recovers_only_uncommitted_review(intake,old_state,frozen,reply,joined):
+ from unittest.mock import patch
+ settings,store,engine=intake
+ capture(store,'quote',text='Logo này 120 cái giá bn',timestamp=time.time()-250)
+ engine.order_intake.poll()
+ old=rows(store)[0]
+ with store.db() as db:
+  payload=json.loads(old['payload'])
+  payload.pop('request_id',None)
+  if frozen:payload['submitted_payload']={'request_id':'already-sent'}
+  db.execute('UPDATE intake_runs SET state=?,payload=? WHERE id=?',(old_state,json.dumps(payload),old['id']))
+ capture(store,'confirm',text=reply,timestamp=time.time()-130)
+ with patch.object(engine.order_intake,'analyze') as analyze:
+  engine.order_intake.poll()
+  batch=analyze.call_args.args[2]
+  assert ('quote' in [m['message_id'] for _,m in batch])==joined
+ assert not engine.erp.calls
+
+def test_quote_then_confirmation_creates_one_order_with_evidence(intake):
+ settings,store,engine=intake
+ capture(store,'photo',text='Logo này 120 cái giá bn',images=[IMAGE],timestamp=time.time()-250)
+ engine.order_intake.poll()
+ old=rows(store)[0]
+ with store.db() as db:
+  payload=json.loads(old['payload']);payload.pop('request_id',None)
+  db.execute("UPDATE intake_runs SET state='review',payload=? WHERE id=?",(json.dumps(payload),old['id']))
+ capture(store,'ok',text='Ok in 120 cái mẫu này',timestamp=time.time()-130)
+ engine.agent.decision=IntakeDecision(action='draft_order',source_message_ids=[1,2],orders=[{'ma_san_pham':None,'so_luong':120,'ten_mau':'Logo đã xác nhận'}])
+ engine.order_intake.poll()
+ run=next(r for r in rows(store) if r['state']=='awaiting_evidence')
+ assert json.loads(run['payload'])['messages']==['photo','ok']
+ engine.order_intake.evidence_saved('wa-1',run['id'],{'image_base64':base64.b64encode(PNG).decode(),'source_message_ids':['photo','ok'],'directory':r'\\nas\files\confirmed'})
+ engine.order_intake.poll();engine.order_intake.poll()
+ assert len(engine.erp.calls)==1
+ assert float(engine.erp.calls[0]['orders'][0]['so_luong'])==120
+ assert all(m['private'] for m in engine.cw.sent)
+
+def test_quantity_followup_after_private_question_reuses_photo(intake):
+ from unittest.mock import patch
+ settings,store,engine=intake
+ capture(store,'photo',text='In mẫu này',images=[IMAGE],timestamp=time.time()-250)
+ engine.order_intake.poll();old=rows(store)[0]
+ with store.db() as db:
+  p=json.loads(old['payload']);p.pop('request_id',None)
+  db.execute("UPDATE intake_runs SET state='review',payload=? WHERE id=?",(json.dumps(p),old['id']))
+  db.execute('INSERT INTO agent_actions VALUES(?,?,?,?,?,?)',('asked',old['id'],'request_customer_clarification',json.dumps({'missing_fields':['quantity']}),'done',json.dumps({'state':'internal_preview'})))
+ capture(store,'qty',text='120 cái',timestamp=time.time()-130)
+ with patch.object(engine.order_intake,'analyze') as a:
+  engine.order_intake.poll()
+  assert [m['message_id'] for _,m in a.call_args.args[2]]==['photo','qty']

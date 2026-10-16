@@ -22,6 +22,8 @@ def synchronize(reader):
     response.raise_for_status()
     reader.cfg["order_policy"] = policy
     reader.cfg["order_intake"] = response.json()["scope"]
+    from .slip_sync import synchronize as sync_slips
+    sync_slips(reader)
     response = reader.http.get(prefix + "/order-evidence")
     response.raise_for_status()
     job = response.json().get("job")

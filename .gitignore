@@ -36,3 +36,9 @@ docs/RA-SOAT-ANH-XA-ZALO*.html
 docs/*mapping*receipts*.json
 docs/*mappings*receipts*.json
 docs/group-mapping-applied-*.json
+
+# Desktop credentials and diagnostic/runtime artifacts
+*.local.json
+*.dmp
+*.dump
+state/

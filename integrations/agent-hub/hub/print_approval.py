@@ -7,6 +7,31 @@ import time
 from hub.order_policy import capture_allowed, key
 
 
+def is_reprint(text):
+    text = key(text)
+    if re.search(r'\b(chưa|không|đừng|khoan|hủy|huỷ|đợi|chờ|test)\b|\?', text):
+        return False
+    return bool(re.search(r'\b(in bù|bù cho|bù thêm)\b', text) and re.search(r'\d+\s*(cái|chiếc|c|áo|bộ)\b', text))
+
+
+def select_reprint(message, history):
+    if not is_reprint(message['text']):
+        raise ValueError('Chưa có yêu cầu in bù rõ số lượng')
+    same = [m for m in history if (m['account'], m['thread_id']) == (message['account'], message['thread_id'])
+            and message['timestamp']-120 <= m['timestamp'] <= message['timestamp']+120]
+    photos = [m for m in same if m.get('images') and author(m)==author(message)]
+    if any(m['timestamp'] > message['timestamp'] and author(m)==author(message) and not m.get('images') and m['message_id']!=message['message_id'] for m in history):
+        raise ValueError('Khách bổ sung sau yêu cầu in bù; cần đối chiếu')
+    if not photos or any(m.get('revision') or m.get('recalled') or m.get('attachments') for m in [message]+photos):
+        raise ValueError('Cần ảnh mẫu in bù đầy đủ từ đúng khách')
+    if any(m.get('origin')=='customer' and author(m)!=author(message) for m in same):
+        raise ValueError('Khách trao đổi xen kẽ; cần xác định ảnh in bù')
+    chosen = sorted({m['message_id']:m for m in [message]+photos}.values(),key=lambda m:(m['timestamp'],m['message_id']))
+    if sum(len(m.get('images',[])) for m in chosen)>8:
+        raise ValueError('Quá nhiều ảnh in bù')
+    return chosen
+
+
 def is_confirmation(text):
     text = key(text)
     if re.search(r'\b(chưa|không|đừng|khoan|hủy|huỷ|đợi|chờ|sửa|thử|test)\b|\?', text):
@@ -91,7 +116,7 @@ class PrintApprovals:
         for row in rows:
             m=json.loads(row[0]);cfg=self.engine.settings.inboxes.get(m['account'],{})
             policy=self.engine.order_intake.policy(m['account'])
-            if policy is None or not is_confirmation(m['text']):continue
+            if policy is None or not (is_confirmation(m['text']) or is_reprint(m['text'])):continue
             if m['origin']!='customer' or m['direction']!='incoming' or (m['account'],m['thread_id'])==(route['account'],route['thread_id']):continue
             if not capture_allowed(policy,cfg.get('channel'),m['thread_id'],m['display_name']):continue
             if key(m['sender']) in {key(n) for n in policy.get(cfg.get('channel','')+'_internal_members',[])}:continue
@@ -102,13 +127,16 @@ class PrintApprovals:
             identity=hashlib.sha256(json.dumps([m['account'],m['thread_id'],m['message_id']]).encode()).hexdigest()
             payload={'destination':route,'confirmation':m['message_id']}
             try:
-                if any(x['timestamp']>m['timestamp'] and author(x)==author(m) and not is_confirmation(x['text']) for x in history):
+                reprint=is_reprint(m['text'])
+                if not reprint and any(x['timestamp']>m['timestamp'] and author(x)==author(m) and not is_confirmation(x['text']) for x in history):
                     raise ValueError('Khách có tin bổ sung sau câu chốt; cần kiểm tra lại')
-                chosen=select_approval(m,history)
+                chosen=select_reprint(m,history) if reprint else select_approval(m,history)
+                if reprint:
+                    payload.update(kind='reprint',notice='YÊU CẦU IN BÙ — '+m['text']+'\nĐối chiếu đúng ảnh và số lượng; không phải thay đổi sau duyệt. Không tự tạo đơn ERP mới.')
                 payload['messages']=[x['message_id'] for x in chosen]
                 photo_ids=sorted({a['sha256'] for x in chosen for a in x.get('assets',[]) if a.get('kind')=='image' and a.get('sha256')})
                 if not photo_ids:photo_ids=sorted(str(i) for x in chosen for i in x.get('images',[]))
-                payload['fingerprint']=hashlib.sha256(json.dumps([m['account'],m['thread_id'],photo_ids]).encode()).hexdigest()
+                payload['fingerprint']=hashlib.sha256(json.dumps([m['account'],m['thread_id'],photo_ids]+([m['message_id']] if reprint else [])).encode()).hexdigest()
                 with self.engine.store.db() as db:
                     previous=db.execute("SELECT 1 FROM print_approvals WHERE json_extract(payload,'$.fingerprint')=?",(payload['fingerprint'],)).fetchone()
                 if previous:raise ValueError('Loạt ảnh này đã có hồ sơ chốt in; kiểm tra trước khi gửi lại')
@@ -185,12 +213,15 @@ class PrintApprovals:
             if m.get('revision') or m.get('recalled'):
                 db.execute("UPDATE print_approvals SET state='review' WHERE id=?",(row['id'],));return None
             newer=db.execute("SELECT 1 FROM captures WHERE account=? AND thread_id=? AND json_extract(payload,'$.timestamp')>? AND json_extract(payload,'$.origin')='customer' LIMIT 1",(row['account'],row['thread_id'],m['timestamp'])).fetchone()
+            if payload.get('kind')=='reprint':
+                selected=select_sources(db,row['account'],row['thread_id'],payload['messages'])
+                newer=db.execute("SELECT 1 FROM captures WHERE account=? AND thread_id=? AND json_extract(payload,'$.timestamp')>? AND json_extract(payload,'$.origin')='customer' LIMIT 1",(row['account'],row['thread_id'],max(x['timestamp'] for x in selected))).fetchone()
             if newer and payload.get('kind')!='amendment':
                 db.execute("UPDATE print_approvals SET state='review' WHERE id=?",(row['id'],));return None
             delivery_id=hashlib.sha256((row['id']+':'+target['account']).encode()).hexdigest()
             db.execute("INSERT INTO print_deliveries VALUES(?,?,?,?,?,NULL)",(delivery_id,row['id'],target['account'],target['thread_id'],'sending'))
             caption='CHỐT IN — '+mapping['display_name']+'\nKhách: '+m['sender']+'\nXác nhận: '+m['text']+'\nHồ sơ: CHOT-IN-'+row['id'][:16]
-            if payload.get('kind')=='amendment':caption=payload['notice']+'\nNhóm: '+mapping['display_name']+'\nBản cập nhật: CHOT-IN-'+row['id'][:16]
+            if payload.get('kind') in ('amendment','reprint'):caption=payload['notice']+'\nNhóm: '+mapping['display_name']+'\nBản cập nhật: CHOT-IN-'+row['id'][:16]
             return dict(id=delivery_id,approval_id=row['id'],account=target['account'],thread_id=target['thread_id'],caption=caption,image_base64=payload['evidence']['image_base64'])
 
     def delivered(self,adapter,identity,result):

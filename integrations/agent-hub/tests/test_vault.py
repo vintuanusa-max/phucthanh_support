@@ -92,7 +92,7 @@ def test_group_identity_and_safe_paths(tmp_path):
     vault = Vault(tmp_path / "local", tmp_path / "nas")
     a = vault.folder({"account": "z", "thread_id": "g1", "display_name": "Nhóm"})
     b = vault.folder({"account": "z", "thread_id": "g2", "display_name": "Nhóm"})
-    assert a != b
+    assert a == b == "NHOM"  # Customer prefix deliberately shared; asset IDs remain unique.
     assert vault.folder({"account": "z", "thread_id": "g1", "display_name": "Đã đổi tên"}) == a
     assert "/" not in safe_name("../../evil.exe") and "\\" not in safe_name("a\\b")
     assert safe_name("CON.txt").startswith("_")

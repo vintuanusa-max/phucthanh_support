@@ -1,0 +1,223 @@
+{
+  "source": "\\\\192.168.1.203\\docker\\phucthanh_support\\docs\\BANG GIA IN PHUC THANH.xlsx",
+  "sha256": "3db3bb0bc3133f6b4291aedc62d5dd089d16f9a59ddf09e1829387ab6e068dc7",
+  "sheet": "BAOGIA",
+  "rows": {
+    "2": {
+      "question": "Giá in bên mình như thế nào ạ",
+      "service": "in PET và in chuyển nhiệt",
+      "answer": "Dạ, anh chị muốn hỏi giá in chuyển nhiệt, in PET hay cắt laser ép cao thành, nhũ phản quang ạ",
+      "range": "A2:C2"
+    },
+    "3": {
+      "question": "In PET giá sao?",
+      "service": "in PET",
+      "answer": "Anh chị in số lượng nhiều không ạ. Nếu số lượng nhiều bên e có giá sỉ luôn ạ, còn in ít thì tính lẻ 70k/mét",
+      "range": "A3:C3"
+    },
+    "4": {
+      "question": "Khổ in tính sao vậy?",
+      "service": "in PET và in chuyển nhiệt",
+      "answer": "Dạ nếu in chuyển nhiệt thì khổ ngang 1m6, còn in PET thì khổ ngang chỉ 58cm thôi ạ",
+      "range": "A4:C4"
+    },
+    "5": {
+      "question": "Giá sỉ thì như thế nào",
+      "service": "in PET",
+      "answer": "Lẻ dưới 5 mét giá 70k\nTừ 10 mét đến 100 mét giá 65k\nTừ 100 mét đến 500 mét giá 60k\nTừ 500 mét đến 1000 mét giá 50k\nTrên 1000 mét giá 45k",
+      "range": "A5:C5"
+    },
+    "6": {
+      "question": "Giá sỉ thì như thế nào",
+      "service": "in chuyển nhiệt",
+      "answer": "Từ 100 mét đến 500 mét giá 18k\nTrên 500 mét giá 15k\nTrên 2000 mét giá 14k\nDoanh số tháng trên 20000 mét giá 12k",
+      "range": "A6:C6"
+    },
+    "7": {
+      "question": "Bên e có mẫu sẵn ko?",
+      "service": "in PET và in chuyển nhiệt",
+      "answer": "Dạ nếu có mẫu sẵn bên e lên đơn in thôi ạ. Còn không có thì sẽ phải vẽ mẫu lại ạ. Nếu in số lượng nhiều thì sẽ không tính phí, còn ít thì tính phí ạ!",
+      "range": "A7:C7"
+    },
+    "8": {
+      "question": "Số lượng nhiều là bao nhiêu?",
+      "service": "in PET và in chuyển nhiệt",
+      "answer": "In chuyển nhiệt số lượng nhiều là trên 100m, còn in PET số lượng nhiều là trên 100m. In PET thì cũng tùy mẫu ạ",
+      "range": "A8:C8"
+    },
+    "9": {
+      "question": "Bên mình có in trên da hoặc simili không?",
+      "service": "in PET và in UV",
+      "answer": "Dạ có ạ, có thể in PET hoặc in UV",
+      "range": "A9:C9"
+    },
+    "10": {
+      "question": "Chào bạn",
+      "service": "in PET và in chuyển nhiệt và in UV",
+      "answer": "Dạ chào quý khách. Bên mình muốn in chuyển nhiệt hay in PET, cắt laser ạ?",
+      "range": "A10:C10"
+    },
+    "11": {
+      "question": "Bên mình có in chuyển nhiệt không?",
+      "service": "in chuyển nhiệt",
+      "answer": "Dạ có ạ. Bên e chuyên in cây vải hoặc bán thành phầm như nón, áo , túi, khẩu trang v.v..",
+      "range": "A11:C11"
+    },
+    "12": {
+      "question": "Bên mình có in PET không?",
+      "service": "in PET",
+      "answer": "Dạ có ạ. Bên e chuyên in PET chất lượng cao, dùng mực và màng PET loại 1 thị trường cho sản phẩm bền và mầu đẹp hơn mấy chỗ khác ạ",
+      "range": "A12:C12"
+    },
+    "13": {
+      "question": "Bên mình làm gì vậy?",
+      "service": "in PET và in chuyển nhiệt và in UV",
+      "answer": "Dạ bên e chuyên in chuyển nhiệt, in PET, cắt laser trên vải, cắt màng PU cao thành và nhiều loại khác ạ",
+      "range": "A13:C13"
+    },
+    "14": {
+      "question": "Tôi cần in PET, bên bạn có dịch vụ đó không?",
+      "service": "in PET",
+      "answer": "Dạ, có ạ. Bạn muốn in mẫu nào nhắn nhé",
+      "range": "A14:C14"
+    },
+    "15": {
+      "question": "Tôi cần in áo, bên bạn có dịch vụ đó không?",
+      "service": "in PET và in chuyển nhiệt",
+      "answer": "Dạ, có ạ. Bạn muốn in mẫu nào nhắn nhé",
+      "range": "A15:C15"
+    },
+    "16": {
+      "question": "Tôi cần in chuyển nhiệt, bên bạn có dịch vụ đó không?",
+      "service": "in chuyển nhiệt",
+      "answer": "Dạ, có ạ. Bạn muốn in mẫu nào nhắn nhé",
+      "range": "A16:C16"
+    },
+    "17": {
+      "question": "Tôi cần in logo nón",
+      "service": "in PET",
+      "answer": "Logo mạc nón thường giá 1000, nếu kích thước lớn thì giá 1200 đến 1500 tùy theo kích thước ạ",
+      "range": "A17:C17"
+    },
+    "18": {
+      "question": "Nếu in logo nón phủ hết mạc nón thì giá như thế nào",
+      "service": "in PET",
+      "answer": "Dạ a gửi hình chi tiết để e báo giá nhé",
+      "range": "A18:C18"
+    },
+    "19": {
+      "question": "In chuyển nhiệt mạc nón giá bao nhiêu?",
+      "service": "in chuyển nhiệt",
+      "answer": "In chuyển nhiệt mạc nón giá 1000 nón trẻ em, và giá 1200 cho nón người lớn",
+      "range": "A19:C19"
+    },
+    "20": {
+      "question": "Bên bạn có cắt laser không?",
+      "service": "cắt laser",
+      "answer": "Dạ có bên e chuyên cắt laser đường cắt sắc nét đẹp ạ",
+      "range": "A20:C20"
+    },
+    "21": {
+      "question": "Giá cắt bao nhiêu tiền cho 1 mét?",
+      "service": "cắt laser",
+      "answer": "Dạ bên e cắt khổ 1m7 là tối đa. Giá dưới 1 mét là 50k, từ 1 đén 5 mét là 30k, từ 5 đến 20 mét là 20k. Còn nhiều hơn nữa giá sẽ tốt hơn với lại cũng tùy là cắt cái gì nữa ạ!",
+      "range": "A21:C21"
+    },
+    "22": {
+      "question": "Cho em ứng tiền đươc không?",
+      "service": "mượn tiền",
+      "answer": "Liện hệ A Tuấn hoặc chị Ngọc nhé",
+      "range": "A22:C22"
+    },
+    "23": {
+      "question": "Cho em ứng lương được không?",
+      "service": "mượn tiền",
+      "answer": "Liện hệ A Tuấn hoặc chị Ngọc chủ công ty nhé! :)",
+      "range": "A23:C23"
+    },
+    "24": {
+      "question": "Mình muốn mượn bạn à!",
+      "service": "mượn tiền",
+      "answer": "Mình là nhân viên tư vấn thôi, làm không có lương nhé! Làm gì có tiền mà mượn =)",
+      "range": "A24:C24"
+    },
+    "25": {
+      "question": "Giá cho đơn pet kích thước nhỏ",
+      "service": "in PET",
+      "answer": "Giá theo diện tích 7cm x 7cm là 1000. Các diện tích khác cứ tính theo công thức Giá mới = Giá cũ × (Diện tích mới / Diện tích cũ)",
+      "range": "A25:C25"
+    },
+    "26": {
+      "question": "In túi canvas, túi tote, túi vải bố, túi không dệt",
+      "service": "in PET và in chuyển nhiệt",
+      "answer": "Giá in chuyển nhiệt cho túi vải là 6000, nếu in sl nhiều từ 1000 cái thì giá 5500, 2000 cái thì giá 5000. Đơn khủng số lượng cực lớn liên hệ sếp e A.Tuấn: 0988998667 nhé",
+      "range": "A26:C26"
+    },
+    "27": {
+      "question": "In cao thành, in UV, in nổi, in giả thêu, in nhũ vàng,in kim tuyến,in phồng",
+      "service": "in UV",
+      "answer": "Giá in theo kích thước và độ nổi. Liên hệ sếp e A.Tuấn: 0988998667",
+      "range": "A27:C27"
+    },
+    "28": {
+      "question": "Nón may rồi, nón may sẵn hoàn chỉnh, đã thành dạng cái nón luôn rồi có in được không?",
+      "service": "in PET",
+      "answer": "Dạ, chỉ in PET được thôi ạ! Giá in cao hơn bình thường do in máy cong ạ. Thường giá in là 2500 1 vị trí mạc nón. Nón may sẵn không in chuyển nhiệt được!. Chi tiết hơn những vị trí in khác liên hệ A.Tuấn: 0988998667 ",
+      "range": "A28:C28"
+    },
+    "29": {
+      "question": "Cắt laser, đục lỗ, cắt logo theo hình có sẵn",
+      "service": "cắt laser",
+      "answer": "Đục lỗ laser cho 1 múi nón là 500, nếu nguyên chỏm là 3000, cặp đuôi là 1000, 2 hông là 1000, mạc là 1000. Lỗ đục trên 1 múi trung bình tầm 180 lỗ, nếu nhiều hơn gấp mấy lần thì x lần giá lên",
+      "range": "A29:C29"
+    },
+    "30": {
+      "question": "Cắt laser 1 múi nón",
+      "service": "cắt laser",
+      "answer": "Cắt 1 múi nón là 100",
+      "range": "A30:C30"
+    },
+    "31": {
+      "question": "Cắt laser lẻ 1 mét khổ 1m6",
+      "service": "cắt laser",
+      "answer": "Giá 50000 cho 1 mét tới",
+      "range": "A31:C31"
+    },
+    "32": {
+      "question": "Cắt laser theo hình rập có sẵn",
+      "service": "cắt laser",
+      "answer": "Bên e tính theo đường cắt (chu vi cắt). Cứ đường cắt dài 50cm là 100đ. Tính theo công thức đường cắt = 2 x (dài x rộng)",
+      "range": "A32:C32"
+    },
+    "33": {
+      "question": "Đơn số lượng lớn là bao nhiêu ?",
+      "service": "in PET",
+      "answer": "Đối với in PET đơn số lượng thường 1000 cái trở lên, và đơn số lượng khủng vài chục ngàn cái thì giá sẽ tốt hơn nữa ạ",
+      "range": "A33:C33"
+    },
+    "34": {
+      "question": "Đơn số lượng lớn là bao nhiêu ?",
+      "service": "in chuyển nhiệt",
+      "answer": "Đối với in chuyển nhiệt số lượng: In mét thì trên 100m , in mạc nón trên 1000 cái , in nguyên nón thì trên 500 bộ ",
+      "range": "A34:C34"
+    },
+    "35": {
+      "question": "Giá cho đơn pet kích thước lớn",
+      "service": "in PET",
+      "answer": "28 cm x 34 cm có giá 10000 . Các diện tích khác cứ tính theo công thức Giá mới = Giá cũ × (Diện tích mới / Diện tích cũ). Chú ý chiều ngang hoặc chiều cao phải dưới 28cm",
+      "range": "A35:C35"
+    },
+    "36": {
+      "question": "Giá cắt gia công PET?",
+      "service": "Cắt PET",
+      "answer": "1 mét giá 10000",
+      "range": "A36:C36"
+    },
+    "37": {
+      "question": "Bên công ty CANAVI",
+      "service": "in PET",
+      "answer": "Giá in pet loại nhỏ  tầm A5 đổ lại là 3500, nhỏ hơn A4 là 5500 ,nhỏ hơn A3 là 8500. Trường hợp lớn hơn thì tùy vào kích thước sẽ báo giá sau",
+      "range": "A37:C37"
+    }
+  }
+}

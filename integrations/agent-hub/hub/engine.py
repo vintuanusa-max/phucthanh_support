@@ -25,6 +25,12 @@ class Engine:
         self.order_intake = OrderIntake(self)
         from hub.print_approval import PrintApprovals
         self.print_approvals = PrintApprovals(self)
+        from hub.production_slips import ProductionSlips
+        self.production_slips = ProductionSlips(self)
+        from hub.slip_orders import SlipOrders
+        self.slip_orders = SlipOrders(self)
+        from hub.pending_guard import PendingGuard
+        self.pending_guard = PendingGuard(self)
 
     def effect(self, key, conversation, kind, payload, *, apply_capture=False):
         review = self.settings.mode == "review" and not apply_capture
@@ -147,10 +153,11 @@ class Engine:
         return False
 
     def process_one(self):
+        self.pending_guard.poll()
         self.store.expire_deliveries()
         job = self.store.claim()
         if not job:
-            return self.order_intake.poll() or self.print_approvals.poll()
+            return self.production_slips.poll() or self.slip_orders.poll() or self.order_intake.poll() or self.print_approvals.poll()
         try:
             payload = json.loads(job["payload"])
             getattr(self, "process_" + job["kind"])(job["id"], payload)
@@ -353,17 +360,6 @@ class Engine:
                             "Nguồn đặt hàng thiếu hoặc trùng yêu cầu trước; cần nhân viên đối chiếu",
                         )
                         return
-                    text_sources = {m["id"]: m.get("content", "") for m in public}
-                    text_sources[message["id"]] = message.get("content", "")
-                    evidence = "\n".join(f"Tin #{sid}: {text_sources.get(sid, '')}" for sid in source_ids)
-                    for line in draft["orders"]:
-                        line["ghi_chu_mau_do"] = (
-                            line["ghi_chu_mau_do"]
-                            + "\nNguồn Chatwoot #"
-                            + str(conversation)
-                            + "\n"
-                            + evidence
-                        )[:4000]
                     png = evidence_png(images, conversation, source_ids)
                     if png:
                         draft["image_base64"] = png
@@ -448,6 +444,9 @@ class Engine:
         cfg = self.settings.inboxes[mapping["account"]]
         if int(cfg["inbox_id"]) != (message.get("inbox", {}).get("id") or message.get("inbox_id")):
             raise ValueError("Conversation/inbox mismatch")
+        if attrs.get('origin') == 'ai' and cfg.get('agentic',{}).get('internal_only'):
+            self.note(key+':internal-only',conversation,'Đã chặn gửi AI: đang ở chế độ xem trước nội bộ.',apply_capture=True)
+            return
         permitted = human_delivery(self.settings, cfg, message) or ai_delivery(
             self.settings, cfg, message, mapping["thread_id"]
         )

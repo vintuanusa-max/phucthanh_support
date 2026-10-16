@@ -10,7 +10,7 @@ def key(value):
 
 def sanitize(config):
     result = {}
-    for channel in ("zalo", "whatsapp"):
+    for channel in ("zalo", "whatsapp", "viber"):
         for suffix in ("internal_members", "skip_groups", "skip_thread_ids", "disable_reply_groups"):
             name = f"{channel}_{suffix}"
             values = config.get(name, [])
@@ -19,7 +19,7 @@ def sanitize(config):
             result[name] = values
         for action in ("receive_messages", "auto_order", "read_private_messages"):
             name = f"{channel}_default_{action}"
-            value = config.get(name, True)
+            value = config.get(name, channel != 'viber')
             if not isinstance(value, bool):
                 raise ValueError("Invalid group policy default")
             result[name] = value
@@ -35,10 +35,16 @@ def sanitize(config):
             }
             for row in rules
         ]
+    ids = config.get('viber_allowed_thread_ids', [])
+    if not isinstance(ids, list) or any(x != 'viber:g1' for x in ids):
+        raise ValueError('Only verified Viber CDG scope is supported')
+    result['viber_allowed_thread_ids'] = ids
     return result
 
 
 def capture_allowed(config, channel, thread_id, name):
+    if channel == 'viber':
+        return thread_id in config.get('viber_allowed_thread_ids', [])
     if channel == "whatsapp" and not re.fullmatch(r"[0-9]+(?:-[0-9]+)?@g\.us", thread_id):
         return False  # Desktop integration is explicitly groups-only.
     if channel == "zalo" and not re.fullmatch(r"g\d+", thread_id):
@@ -66,6 +72,8 @@ def allowed(config, channel, group, action="auto_order"):
 
 
 def eligible(config, channel, message):
+    if channel == 'viber' and not capture_allowed(config,channel,message.get('thread_id'),message.get('display_name')):
+        return False
     if channel == 'whatsapp' and message.get('sender') == 'Thành viên chưa xác định tên':
         return False
     if (

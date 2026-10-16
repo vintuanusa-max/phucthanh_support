@@ -1,0 +1,18 @@
+
+
+@router.get("/agent/order-status", dependencies=[Depends(machine)])
+def agent_order_status(customer_id: uuid.UUID, order_ref: str):
+    if not re.fullmatch(r"[A-Za-z0-9-]{5,64}", order_ref):
+        raise HTTPException(422, "Invalid order reference")
+    with transaction() as conn:
+        row = conn.execute(
+            "SELECT dh.id,dh.ma_don_hang,dh.doi_tac_id,tt.ten_hien_thi "
+            "FROM don_hang dh JOIN trang_thai_don_hang tt ON tt.id=dh.trang_thai_id "
+            "WHERE dh.doi_tac_id=%s AND dh.deleted_at IS NULL "
+            "AND (dh.ma_don_hang=%s OR dh.id::text=%s)",
+            (customer_id, order_ref, order_ref),
+        ).fetchone()
+    if not row:
+        raise HTTPException(404, "Order not found for mapped customer")
+    return {"customer_id": str(row["doi_tac_id"]), "order_id": str(row["id"]),
+            "order_ref": row["ma_don_hang"], "status": row["ten_hien_thi"]}

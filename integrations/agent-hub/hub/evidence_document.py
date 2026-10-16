@@ -225,12 +225,12 @@ def erp_evidence_png(document):
 
 
 def save_document(messages, order_code, nas_root, notice=None, new_message_ids=None):
-    from zalo_desktop.vault import safe_name
+    from zalo_desktop.vault import safe_name, customer_folder
 
     identity, manifest, pages = render_document(messages, order_code, notice, new_message_ids)
     root = (
         Path(nas_root)
-        / safe_name(messages[0]["display_name"])
+        / customer_folder(messages[0]["display_name"])
         / "orders"
         / safe_name(order_code)
         / ("evidence-" + identity[:16])

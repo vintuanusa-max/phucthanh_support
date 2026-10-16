@@ -23,6 +23,21 @@ def human_delivery(settings, cfg, message):
 def delivery_block(settings, cfg, message, thread):
     if not cfg.get("delivery_enabled"):
         return "Đầu gửi đang tắt"
+    if cfg.get('channel') == 'viber':
+        # Viber rollout is staff-only even when the shared hub runs in live mode.
+        if not human_delivery(settings, cfg, message):
+            return "Viber chỉ gửi câu trả lời công khai của nhân viên; AI giữ ghi chú nội bộ"
+        if thread not in cfg.get('delivery_allowed_threads', []):
+            return "Nhóm Viber chưa được phép gửi"
+        if message.get('content_type', 'text') != 'text':
+            return "Viber chỉ hỗ trợ văn bản"
+        try:
+            value = message['created_at']
+            stamp = float(value) if isinstance(value, (int, float)) else datetime.fromisoformat(value.replace('Z', '+00:00')).timestamp()
+            if stamp < float(cfg['delivery_after']) or not 0 <= time.time() - stamp <= 300:
+                return "Tin Viber cũ hoặc quá hạn; chưa gửi"
+        except (KeyError, TypeError, ValueError):
+            return "Không xác minh được thời điểm tin Viber"
     if settings.mode != "live" and not (
         human_delivery(settings, cfg, message) or ai_delivery(settings, cfg, message, thread)
     ):

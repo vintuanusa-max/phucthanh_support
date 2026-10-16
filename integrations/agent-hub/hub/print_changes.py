@@ -19,6 +19,37 @@ def relevant(message):
                 or re.search(r'\b(sửa|đổi|thay|tăng|giảm|hủy|huỷ|dừng|khoan|chốt lại|duyệt lại|in lại|lấy mẫu|mẫu mới|thêm|bớt)\b',text))
 
 
+def correction(text):
+    return bool(re.search(r'\b(sửa|đổi|thay|tăng|giảm|hủy|huỷ|dừng|khoan|bớt)\b', key(text)))
+
+
+def linked_changes(fresh, root, confirmation, original_ids, unique_recent):
+    """Require correction intent AND an explicit reference, never group recency alone."""
+    sender = confirmation.get('sender_id') or key(confirmation.get('sender'))
+    selected = []
+    for m in fresh:
+        if m['timestamp'] <= confirmation['timestamp'] or m.get('recalled'):
+            continue
+        if (m.get('sender_id') or key(m.get('sender'))) != sender:
+            continue
+        text = key(m.get('text'))
+        quote = m.get('quoted_image') or {}
+        exact = (quote.get('resolved') and quote.get('message_id') in original_ids) or ('chot-in-'+root[:16] in text)
+        verbal = unique_recent and 0 < m['timestamp']-confirmation['timestamp'] <= 900 and bool(re.search(r'(đơn|mẫu) (vừa|mới) (chốt|duyệt)', text))
+        new_order = bool(re.search(r'(đơn mới|đơn khác|mẫu khác|làm mẫu|lm mẫu)', text))
+        if new_order:
+            if selected: break
+            continue
+        if correction(text) and (exact or verbal):
+            selected.append(m)
+        elif selected and 0 <= m['timestamp']-selected[-1]['timestamp'] <= 120 and relevant(m):
+            if quote and not exact: break
+            selected.append(m)
+        elif selected:
+            break
+    return selected[:8]
+
+
 def describe(old, changes, root, version, ambiguous=False):
     old_text=[m['text'] for m in old if m.get('text') and not m['text'].startswith('[Ảnh')]
     new_text=[m['text'] for m in changes if m.get('text') and not m['text'].startswith('[Ảnh')]
@@ -72,19 +103,21 @@ def poll_changes(owner):
                     c=json.loads(src[0])
                     if c['timestamp']<fresh[-1]['timestamp']:matched.append((r,c))
             if not matched:continue
-            root,confirmation=matched[0]
-            changes=[m for m in fresh if m['timestamp']>confirmation['timestamp']]
-            if not changes or not any(relevant(m) for m in changes):continue
-            if confirmation['timestamp']<changes[0]['timestamp']-86400 and not any(re.search(r'\b(sửa|đổi|thay|tăng|giảm|hủy|huỷ|dừng|khoan|thêm|bớt)\b',key(m.get('text'))) for m in changes):continue
-            # Limit each notice; subsequent messages remain pending instead of being dropped.
-            changes=changes[:8]
-            previous=db.execute("SELECT payload FROM print_approvals WHERE json_extract(payload,'$.root_id')=? ORDER BY created DESC LIMIT 1",(root['id'],)).fetchone()
+            selected_roots=[]
+            for candidate, confirm in matched:
+                original=json.loads(candidate['payload']).get('messages',[])
+                recent=[c for _,c in matched if 0 < fresh[-1]['timestamp']-c['timestamp'] <= 900]
+                selected=linked_changes(fresh,candidate['id'],confirm,original,len(recent)==1)
+                if selected:selected_roots.append((candidate,confirm,selected))
+            if len(selected_roots)!=1:continue
+            root,confirmation,changes=selected_roots[0]
+            previous=db.execute("SELECT payload FROM print_approvals WHERE json_extract(payload,'$.root_id')=? AND COALESCE(json_extract(payload,'$.invalidated'),0)=0 AND COALESCE(json_extract(payload,'$.correction_notice'),0)=0 ORDER BY created DESC LIMIT 1",(root['id'],)).fetchone()
             prior=json.loads(previous[0]) if previous else json.loads(root['payload'])
             version=int(prior.get('change_version',0))+1
             old_ids=prior.get('messages',[])[-12:]
             old=[json.loads(db.execute('SELECT payload FROM captures WHERE account=? AND thread_id=? AND message_id=? ORDER BY revision DESC LIMIT 1',(account,thread,mid)).fetchone()[0]) for mid in old_ids]
             ids=list(dict.fromkeys(old_ids+[m['message_id'] for m in changes]))
-            ambiguous=(len(matched)>1 or confirmation['timestamp']<changes[0]['timestamp']-86400 or any((m.get('sender_id') or key(m.get('sender')))!=(confirmation.get('sender_id') or key(confirmation.get('sender'))) for m in changes))
+            ambiguous=False
             notice=describe(old,changes,root['id'],version,ambiguous)
             identity=hashlib.sha256(json.dumps(['print-change',account,thread,root['id'],[m['message_id'] for m in changes]]).encode()).hexdigest()
             payload={'kind':'amendment','root_id':root['id'],'change_version':version,'destination':route,

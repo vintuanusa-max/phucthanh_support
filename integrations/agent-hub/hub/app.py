@@ -68,6 +68,24 @@ def create_app(settings=None, engine=None, start_worker=True):
         if not hmac.compare_digest(authorization, "Bearer " + settings.ingest_token):
             raise HTTPException(401, "Adapter authorization required")
 
+    @app.get('/agentic/status', dependencies=[Depends(require_admin)])
+    def agentic_status():
+        with store.db() as db:
+            runs=[dict(r) for r in db.execute('SELECT * FROM agent_runs ORDER BY updated DESC LIMIT 50')]
+            proposals=[dict(r) for r in db.execute('SELECT * FROM agent_proposals ORDER BY created DESC LIMIT 50')]
+        return {'scopes':{a:c.get('agentic',{}) for a,c in settings.inboxes.items()},'runs':runs,'proposals':proposals}
+
+    @app.get('/context-agent/status', dependencies=[Depends(require_admin)])
+    def context_agent_status():
+        with store.db() as db:
+            decisions = [dict(r) for r in db.execute(
+                "SELECT id,run_id,version,state,decision,created FROM context_decisions ORDER BY created DESC LIMIT 50")]
+            work = [dict(r) for r in db.execute(
+                "SELECT w.*,r.state AS intake_state,r.result AS intake_result FROM context_work_items w "
+                "LEFT JOIN intake_runs r ON r.id=w.run_id ORDER BY w.updated DESC LIMIT 50")]
+        return {'scopes': {a:c.get('context_agent', {}) for a,c in settings.inboxes.items()},
+                'decisions': decisions, 'work_items': work}
+
     @app.get('/adapters/{account}/print-evidence', dependencies=[Depends(require_ingest)])
     def print_evidence(account: str):
         return {'job':engine.print_approvals.evidence_request(account)}
@@ -88,6 +106,15 @@ def create_app(settings=None, engine=None, start_worker=True):
     @app.post('/adapters/{account}/print-deliveries/{identity}', dependencies=[Depends(require_ingest)])
     def print_delivery_result(account: str,identity: str,data: dict):
         engine.print_approvals.delivered(account,identity,data)
+        return {'stored':True}
+
+    @app.get('/adapters/{account}/production-slips', dependencies=[Depends(require_ingest)])
+    def production_slip_pending(account: str):
+        return {'job':engine.production_slips.pending(account)}
+
+    @app.post('/adapters/{account}/production-slips/{identity}', dependencies=[Depends(require_ingest)])
+    def production_slip_saved(account: str,identity: str,data: dict):
+        engine.production_slips.saved(account,identity,data)
         return {'stored':True}
 
     @app.get("/health")
@@ -132,14 +159,14 @@ def create_app(settings=None, engine=None, start_worker=True):
         with engine.lock:
             if request.owner == "human":
                 store.set_owner(conversation, "human")
-                if settings.mode == "live" or engine.trial_for(conversation):
+                if settings.mode == "live" or (engine.trial_for(conversation) or engine.order_intake.agent_loop.conversation_scope(conversation)):
                     engine.cw.status(conversation, "open")
             else:
                 if any("ai_trials" in c for c in settings.inboxes.values()) and not engine.trial_for(
                     conversation
                 ):
                     raise HTTPException(409, "AI is disabled outside the trial groups")
-                if settings.mode == "live" or engine.trial_for(conversation):
+                if settings.mode == "live" or (engine.trial_for(conversation) or engine.order_intake.agent_loop.conversation_scope(conversation)):
                     current = engine.cw.conversation(conversation)
                     if human_assigned(current):
                         raise HTTPException(409, "Unassign the human agent in Chatwoot before resuming AI")
