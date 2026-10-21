@@ -42,3 +42,17 @@ docs/group-mapping-applied-*.json
 *.dmp
 *.dump
 state/
+
+# Local backups and private operational evidence
+*.before-*
+*.backup-*
+config.json.*
+**/leave_reviewed.json
+docs/BANG GIA IN PHUC THANH.xlsx
+docs/*AUDIT*.md
+docs/*RA-SOAT*.md
+docs/CHI-YEN-FWD-*.md
+docs/CHU-MANH-405-*.md
+docs/CO-VAN-QUANTITY-FOLLOWUP-*.md
+docs/LOTTE-CHOCOLAT-230-*.md
+integrations/agent-hub/RA-SOAT-SAU-REDIS-*.md

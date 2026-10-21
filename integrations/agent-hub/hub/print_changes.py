@@ -82,6 +82,8 @@ def poll_changes(owner):
     grouped={}
     for root in roots:grouped.setdefault((root['account'],root['thread_id']),[]).append(root)
     for (account,thread),candidates in grouped.items():
+        from hub.quality_monitor import monitored
+        if monitored(account,thread):continue
         cfg=engine.settings.inboxes.get(account,{})
         policy=engine.order_intake.policy(account)
         mapping=engine.store.thread(account=account,thread_id=thread)

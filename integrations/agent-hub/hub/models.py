@@ -3,7 +3,8 @@ from decimal import Decimal
 from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+import unicodedata
 
 
 class StrictModel(BaseModel):
@@ -75,6 +76,16 @@ class Decision(StrictModel):
 
 class IntakeOrderLine(OrderLine):
     ma_san_pham: str | None = Field(default=None, min_length=1, max_length=200)
+
+    @field_validator("ma_san_pham", mode="before")
+    @classmethod
+    def normalize_pending_product(cls, value):
+        # These are missing-code labels, never actual ERP product codes.
+        if isinstance(value, str):
+            normalized = " ".join(unicodedata.normalize("NFC", value).casefold().split())
+            if normalized in {"chờ mã", "erp chờ mã", "cho ma", "erp cho ma", "null", "none", ""}:
+                return None
+        return value
 
 
 class IntakeDecision(Decision):

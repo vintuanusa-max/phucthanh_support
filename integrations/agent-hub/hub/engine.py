@@ -31,6 +31,14 @@ class Engine:
         self.slip_orders = SlipOrders(self)
         from hub.pending_guard import PendingGuard
         self.pending_guard = PendingGuard(self)
+        from hub.artwork_checks import ArtworkChecks
+        self.artwork_checks = ArtworkChecks(self)
+        from hub.quality_monitor import QualityMonitor
+        self.quality_monitor = QualityMonitor(self)
+        from hub.leave_monitor import LeaveMonitor
+        self.leave_monitor = LeaveMonitor(self)
+        from hub.file_previews import FilePreviews
+        self.file_previews = FilePreviews(self)
 
     def effect(self, key, conversation, kind, payload, *, apply_capture=False):
         review = self.settings.mode == "review" and not apply_capture
@@ -152,12 +160,18 @@ class Engine:
             return self.store.enqueue(event_key("incoming", payload["id"]), "incoming", payload)
         return False
 
+    def process_artwork_check(self, key, payload):
+        self.artwork_checks.process(payload['id'])
+
+    def process_design_brief(self, key, payload):
+        self.order_intake.design_briefs.collect(payload['run'], payload['messages'])
+
     def process_one(self):
         self.pending_guard.poll()
         self.store.expire_deliveries()
         job = self.store.claim()
         if not job:
-            return self.production_slips.poll() or self.slip_orders.poll() or self.order_intake.poll() or self.print_approvals.poll()
+            return self.quality_monitor.poll() or self.leave_monitor.poll() or self.production_slips.poll() or self.slip_orders.poll() or self.order_intake.poll() or self.print_approvals.poll()
         try:
             payload = json.loads(job["payload"])
             getattr(self, "process_" + job["kind"])(job["id"], payload)
@@ -238,6 +252,8 @@ class Engine:
     def process_incoming(self, key, message):
         conversation = message["conversation"]["id"]
         mapping = self.store.thread(conversation=conversation)
+        from hub.quality_monitor import monitored
+        if mapping and monitored(mapping["account"],mapping["thread_id"]):return
         if mapping and self.order_intake.scope(mapping["account"]).get("enabled_after"):
             from hub.order_policy import allowed
 
@@ -522,9 +538,14 @@ class Engine:
             if row and row["state"] in {"blocked", "failed", "uncertain"}:
                 self.handoff(key, payload["conversation"], payload["text"])
                 return
+        from hub.quality_monitor import monitored
+        quality=bool(mapping and monitored(mapping['account'],mapping['thread_id']) and payload.get('quality_review'))
+        if quality:
+            self.store.set_owner(payload['conversation'],'human')
+            self.effect(key+':open',payload['conversation'],'status',{'status':'open'},apply_capture=True)
         self.note(
             key,
             payload["conversation"],
             payload["text"],
-            apply_capture=cfg.get("human_delivery_enabled") is True,
+            apply_capture=quality or cfg.get("human_delivery_enabled") is True,
         )

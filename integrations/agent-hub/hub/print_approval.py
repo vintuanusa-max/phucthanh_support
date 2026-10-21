@@ -114,7 +114,10 @@ class PrintApprovals:
         with self.engine.store.db() as db:
             rows=db.execute("SELECT c.payload FROM captures c LEFT JOIN print_approvals p ON p.account=c.account AND p.thread_id=c.thread_id AND p.confirmation_id=c.message_id WHERE p.id IS NULL AND NOT EXISTS(SELECT 1 FROM print_change_sources x WHERE x.account=c.account AND x.thread_id=c.thread_id AND x.message_id=c.message_id) AND json_extract(c.payload,'$.timestamp')>=? AND json_extract(c.payload,'$.timestamp')<? ORDER BY json_extract(c.payload,'$.timestamp') DESC LIMIT 500",(route['enabled_after'],time.time()-120)).fetchall()
         for row in rows:
-            m=json.loads(row[0]);cfg=self.engine.settings.inboxes.get(m['account'],{})
+            m=json.loads(row[0])
+            from hub.quality_monitor import monitored
+            if monitored(m['account'],m['thread_id']):continue
+            cfg=self.engine.settings.inboxes.get(m['account'],{})
             policy=self.engine.order_intake.policy(m['account'])
             if policy is None or not (is_confirmation(m['text']) or is_reprint(m['text'])):continue
             if m['origin']!='customer' or m['direction']!='incoming' or (m['account'],m['thread_id'])==(route['account'],route['thread_id']):continue
@@ -160,6 +163,9 @@ class PrintApprovals:
             if not row:return None
             payload=json.loads(row['payload'])
             messages=select_sources(db,row['account'],row['thread_id'],payload['messages'])
+            if payload.get('missing_quote_disclosed'):
+                from hub.order_additions import fallback_sources
+                messages=fallback_sources(messages)
         return dict(id=row['id'],messages=messages,reference='CHOT-IN-'+row['id'][:16],notice=payload.get('notice'),new_message_ids=payload.get('new_message_ids',[]))
 
     def evidence_saved(self, adapter, identity, result):
@@ -216,12 +222,12 @@ class PrintApprovals:
             if payload.get('kind')=='reprint':
                 selected=select_sources(db,row['account'],row['thread_id'],payload['messages'])
                 newer=db.execute("SELECT 1 FROM captures WHERE account=? AND thread_id=? AND json_extract(payload,'$.timestamp')>? AND json_extract(payload,'$.origin')='customer' LIMIT 1",(row['account'],row['thread_id'],max(x['timestamp'] for x in selected))).fetchone()
-            if newer and payload.get('kind')!='amendment':
+            if newer and payload.get('kind') not in ('amendment','order_addition'):
                 db.execute("UPDATE print_approvals SET state='review' WHERE id=?",(row['id'],));return None
             delivery_id=hashlib.sha256((row['id']+':'+target['account']).encode()).hexdigest()
             db.execute("INSERT INTO print_deliveries VALUES(?,?,?,?,?,NULL)",(delivery_id,row['id'],target['account'],target['thread_id'],'sending'))
             caption='CHỐT IN — '+mapping['display_name']+'\nKhách: '+m['sender']+'\nXác nhận: '+m['text']+'\nHồ sơ: CHOT-IN-'+row['id'][:16]
-            if payload.get('kind') in ('amendment','reprint'):caption=payload['notice']+'\nNhóm: '+mapping['display_name']+'\nBản cập nhật: CHOT-IN-'+row['id'][:16]
+            if payload.get('kind') in ('amendment','reprint','order_addition'):caption=payload['notice']+'\nNhóm: '+mapping['display_name']+'\nBản cập nhật: CHOT-IN-'+row['id'][:16]
             return dict(id=delivery_id,approval_id=row['id'],account=target['account'],thread_id=target['thread_id'],caption=caption,image_base64=payload['evidence']['image_base64'])
 
     def delivered(self,adapter,identity,result):
@@ -243,6 +249,7 @@ class PrintApprovals:
         if complete:
             is_change=json.loads(approval['payload']).get('kind')=='amendment'
             label='ĐÃ BÁO THAY ĐỔI SAU DUYỆT: ' if is_change else 'ĐÃ CHUYỂN DUYỆT IN: '
+            if json.loads(approval['payload']).get('kind')=='order_addition':label='ĐÃ BÁO YÊU CẦU ĐẶT THÊM: '
             mapping=self.engine.store.thread(account=approval['account'],thread_id=approval['thread_id'])
             if mapping:self.engine.note(row['approval_id']+':print-complete',mapping['conversation'],label+'Bản tổng hợp ảnh và tin xác nhận đã gửi tới nhóm File In - Giấy In - Màng Pet trên các kênh đã cấu hình. Hồ sơ CHOT-IN-'+row['approval_id'][:16]+'. Việc này độc lập với tạo đơn ERP; cảnh báo thiếu thông tin ERP cần được xử lý riêng.',apply_capture=True)
         if state in ('uncertain','blocked','submitted'):

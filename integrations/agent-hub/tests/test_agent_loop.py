@@ -209,3 +209,11 @@ def test_outside_business_scope_question_silent(intake):
  result=engine.order_intake.agent_loop.execute({'account':'wa-1','thread_id':'g123','conversation':20,'id':'test'},'request_customer_clarification',{'missing_fields':['order_id'],'friendly_question':'Mã đơn nào?'},{})
  assert result['state']=='silent_by_policy'
  assert not engine.cw.sent
+
+def test_missing_optional_name_returns_reconsider_not_silent(intake):
+    settings,store,engine=intake;enable(settings)
+    settings.inboxes['wa-1']['agentic']['business_reply_scope']=True
+    run={'id':'optional-test','account':'wa-1','thread_id':'g123','conversation':1}
+    value=engine.order_intake.agent_loop.execute(run,'request_customer_clarification',{'missing_fields':['tên mẫu/mã sản phẩm'],'friendly_question':'Tên mẫu?'},{})
+    assert value['state']=='reconsider_order'
+    assert not engine.erp.calls

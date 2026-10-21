@@ -9,6 +9,7 @@ from urllib.parse import quote
 import httpx
 
 from hub.order_policy import capture_allowed, key
+from hub.order_signals import production_request
 
 
 def normalized(text):
@@ -17,7 +18,8 @@ def normalized(text):
 
 def trigger(text):
     text=key(text)
-    return bool(re.search(r'\blệnh(?:\s+in)?\b',text)) and not re.search(r'\b(không|chưa|hủy|huỷ)\b',text)
+    explicit = bool(re.search(r'\blệnh(?:\s+in)?\b',text)) and not re.search(r'\b(không|chưa|hủy|huỷ)\b',text)
+    return explicit or production_request(text)
 
 
 def matches_sender(message,rule):
@@ -116,3 +118,10 @@ class ProductionSlips:
             db.execute("UPDATE production_slips SET state='copied',payload=? WHERE id=?",(json.dumps(payload,ensure_ascii=False),identity))
         mapping=self.engine.store.thread(account=account,thread_id=row['thread_id'])
         if mapping:self.engine.note(identity+':saved',mapping['conversation'],'ĐÃ LƯU PHIẾU LỆNH: '+payload['folder']+'/DON HANG/'+result['name']+'. Gemini xác minh tiêu đề Phiếu Lệnh Sản Xuất; bản gốc được giữ nguyên.',apply_capture=True)
+
+        # New copied slips also need a design brief; this never invokes the ERP intake.
+        if mapping:
+            with self.engine.store.db() as db:
+                source=db.execute('SELECT payload FROM captures WHERE account=? AND thread_id=? AND message_id=? ORDER BY revision DESC LIMIT 1',(account,row['thread_id'],row['message_id'])).fetchone()
+            if source:
+                self.engine.store.enqueue('slip-design:'+identity, 'design_brief', {'run':{'id':'slip-design:'+identity,'account':account,'thread_id':row['thread_id'],'conversation':mapping['conversation']},'messages':[json.loads(source[0])]})

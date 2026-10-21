@@ -39,6 +39,19 @@ def select_sources(db, account, thread, message_ids):
             if not row:
                 raise ValueError("Image does not belong to source message")
             images.append({"mime_type": row[0], "data": base64.b64encode(row[1]).decode()})
+        if message.get('quoted_image') and not message['quoted_image'].get('resolved'):
+            from hub.order_additions import resolve_quote_db
+            original=resolve_quote_db(db,message)
+            if original:
+                source=db.execute('SELECT id FROM captures WHERE account=? AND thread_id=? AND message_id=? ORDER BY revision DESC LIMIT 1',(account,thread,original['message_id'])).fetchone()
+                quoted=[]
+                for media_id in original['images']:
+                    media=db.execute('SELECT mime_type,data FROM media WHERE id=? AND capture_id=?',(media_id,source[0])).fetchone()
+                    if not media:break
+                    quoted.append({'mime_type':media[0],'data':base64.b64encode(media[1]).decode()})
+                if len(quoted)==len(original['images']):
+                    message={**message,'quoted_image':{**message['quoted_image'],'resolved':True,'message_id':original['message_id'],'timestamp':original['timestamp'],'sender':original.get('sender','')}}
+                    if not images:images=quoted
         result.append({**message, "images": images})
     return sorted(result, key=lambda item: (item["timestamp"], item["message_id"]))
 
@@ -160,7 +173,7 @@ def render_document(messages, order_code, notice=None, new_message_ids=None):
                 frame = ImageOps.exif_transpose(original).convert("RGB")
                 frame.thumbnail((width - 2 * margin, 1080))
             ensure(frame.height + 48)
-            lines("Ảnh đính kèm — bản xem, bản gốc lưu riêng trên NAS", small)
+            lines(item.get("preview_label", "Ảnh đính kèm — bản xem, bản gốc lưu riêng trên NAS"), small)
             canvas.paste(frame, (margin, y))
             y += frame.height + 16
         for asset in message.get("assets", []):
@@ -226,7 +239,9 @@ def erp_evidence_png(document):
 
 def save_document(messages, order_code, nas_root, notice=None, new_message_ids=None):
     from zalo_desktop.vault import safe_name, customer_folder
+    from hub.document_preview import enrich
 
+    messages = enrich(messages, nas_root)
     identity, manifest, pages = render_document(messages, order_code, notice, new_message_ids)
     root = (
         Path(nas_root)

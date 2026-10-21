@@ -22,6 +22,20 @@ def confirms_order(text):
     return bool(re.search(r'\b(ok|oke|đồng ý|chốt|đặt|làm giúp|in giúp)\b', text))
 
 
+def image_only_caption_pending(message, order_text):
+    """Allow only the legacy caption marker, never a missing media attachment."""
+    text = key(order_text)
+    return (
+        message.get('attachments') == ['whatsapp-desktop:caption-unverified']
+        and bool(message.get('images'))
+        and len(message.get('assets', [])) == len(message['images'])
+        and all(a.get('kind') == 'image' and a.get('state') == 'ready'
+                and a.get('sha256') and a.get('relative_path') for a in message['assets'])
+        and not re.search(r'\?|\b(chưa|không|khoan|đừng|hủy|huỷ)\b', text)
+        and bool(re.search(r'\b(chạy|chốt|đặt|in giúp|làm giúp)\b', text))
+    )
+
+
 def sender_key(message):
     return message.get("sender_id") or key(message["sender"])
 
@@ -42,6 +56,10 @@ class OrderIntake:
         self.context_gate = ContextGate(engine)
         from hub.agent_loop import AgentLoop
         self.agent_loop = AgentLoop(self)
+        from hub.design_briefs import DesignBriefs
+        self.design_briefs = DesignBriefs(self)
+        from hub.order_additions import OrderAdditions
+        self.additions = OrderAdditions(self)
         with self.store.db() as db:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS intake_policy (
@@ -93,6 +111,8 @@ class OrderIntake:
         return self.engine.settings.inboxes.get(account, {}).get("order_intake", {})
 
     def accepts(self, message):
+        from hub.quality_monitor import monitored
+        if monitored(message["account"],message["thread_id"]):return False
         cfg = self.engine.settings.inboxes.get(message["account"], {})
         if cfg.get('production_slips',{}).get('auto_order'):
             with self.store.db() as db:
@@ -137,6 +157,7 @@ class OrderIntake:
 
     def poll(self):
         """One operation at a time; claims survive restart without replaying writes."""
+        if self.additions.recover_notice():return True
         with self.store.db() as db:
             expired = db.execute(
                 "SELECT * FROM intake_runs WHERE state='waiting_details' "
@@ -210,15 +231,15 @@ class OrderIntake:
                 with self.store.db() as db:
                     prior = db.execute(
                         "SELECT c.id,c.payload FROM captures c JOIN intake_sources s ON s.capture_id=c.id "
-                        "JOIN intake_runs r ON r.id=s.run_id AND (r.state IN ('ignored','waiting_details') OR (r.state='review' AND (?=1 OR (?=1 AND EXISTS(SELECT 1 FROM agent_actions a WHERE a.run_id=r.id AND a.state='done' AND (a.tool='request_customer_clarification' OR (a.tool='prepare_print_quote' AND json_extract(a.result,'$.state')='missing_fields'))))) AND json_extract(r.payload,'$.submitted_payload') IS NULL AND json_extract(r.payload,'$.request_id') IS NULL)) "
-                        "WHERE c.account=? AND c.thread_id=? AND json_extract(c.payload,'$.timestamp')>=? "
+                        "JOIN intake_runs r ON r.id=s.run_id AND (r.state IN ('ignored','waiting_details') OR (r.state='review' AND (?=1 OR (?=1 AND (json_extract(r.result,'$.reason') IN ('Chờ quá 30 phút, chưa đủ thông tin','Đã đọc ảnh sau 30 phút; chưa xác định đủ dữ liệu đơn mới') OR EXISTS(SELECT 1 FROM agent_actions a WHERE a.run_id=r.id AND a.state='done' AND (a.tool='request_customer_clarification' OR (a.tool='escalate_to_human' AND instr(lower(json_extract(a.args,'$.reason')),'số lượng')>0) OR (a.tool='prepare_print_quote' AND json_extract(a.result,'$.state')='missing_fields')))))) AND json_extract(r.payload,'$.submitted_payload') IS NULL AND json_extract(r.payload,'$.request_id') IS NULL)) "
+                        "WHERE json_extract(r.payload,'$.submitted_payload') IS NULL AND json_extract(r.payload,'$.request_id') IS NULL AND c.account=? AND c.thread_id=? AND json_extract(c.payload,'$.timestamp')>=? "
                         "AND json_extract(c.payload,'$.timestamp')<? AND date(json_extract(c.payload,'$.timestamp'),'unixepoch','+7 hours')=date(?,'unixepoch','+7 hours') ORDER BY c.rowid DESC LIMIT 12",
                         (
                             int(any(confirms_order(m['text']) for _,m in batch)),
                             int(any(re.search(r'\d+\s*(?:cái|chiếc|c|cm|mét|met|bộ|áo)\b|^\s*\d+\s*$',key(m['text'])) for _,m in batch)),
                             account,
                             message["thread_id"],
-                            max(scope["enabled_after"], message["timestamp"] - 1800),
+                            max(scope["enabled_after"], message["timestamp"] - 86400),
                             message["timestamp"],
                             message["timestamp"],
                         ),
@@ -325,6 +346,13 @@ class OrderIntake:
 
     def analyze(self, run, payload, batch, *, image_timeout=False, agent_decision=None):
         messages = [m for _, m in batch]
+        # Reconcile delayed Desktop quote references before any order/context gate.
+        from hub.quote_recovery import recover_quotes
+        recover_quotes(self.store, messages)
+        if self.additions.handle(run,messages):
+            return
+        if agent_decision is None:
+            self.design_briefs.collect(run, messages)
         from hub.print_approval import is_reprint
         if any(is_reprint(m['text']) for m in messages):
             self.state(run['id'], 'review', {'reason':'In bù: xử lý bằng hồ sơ chuyển nhóm sản xuất, không tạo đơn mới'})
@@ -334,6 +362,45 @@ class OrderIntake:
             quote = m.get('quoted_image')
             if quote and (not quote['resolved'] or not m['images']):
                 raise ValueError('Quoted image unavailable; staff must verify original')
+        from hub.order_groups import image_groups, validate_group_quantity
+        groups = image_groups(messages)
+        if len(groups) > 1 and agent_decision is None:
+            from hub.models import IntakeDecision
+            from hub.agent_loop import verify_action
+            orders, source_ids = [], []
+            if len(groups) > 4 or len(messages) > 12:
+                raise ValueError('Too many image groups; needs review')
+            for group_number, group in enumerate(groups, 1):
+                group_messages = [m for _, m in group]
+                group_images = [i for m in group_messages for i in self.store.images(m.get('images', []))]
+                if len(group_images) > 2:
+                    raise ValueError('Image group has more than two images; needs review')
+                context = {
+                    'order_intake_only': True,
+                    'image_group_only': True,
+                    'messages': [{'id': n, 'text': m['text'], 'assets': m.get('assets', []),
+                                  'image_count': len(m.get('images', []))} for n, m in group],
+                    'latest_message_id': group[-1][0],
+                    'latest_message': group[-1][1]['text'],
+                    'image_message_ids': [n for n, m in group if m.get('images')],
+                    'images': group_images,
+                    'already_ordered_message_ids': [],
+                }
+                part = self.engine.agent.decide(context)
+                expected_ids = {n for n, _ in group}
+                if part.action != 'draft_order' or not part.orders or set(part.source_message_ids) != expected_ids:
+                    raise ValueError('Image group is incomplete or ambiguous; needs review')
+                validate_group_quantity(part.orders, group_messages)
+                check_context = self.context_gate.build(run, group_messages)
+                check_context['verification_images'] = group_images
+                verify_action(self.engine.settings, check_context, 'propose_order_draft',
+                              {'items': [o.model_dump(mode='json') for o in part.orders],
+                               'source_message_ids': [m['message_id'] for m in group_messages]})
+                orders.extend(part.orders)
+                source_ids.extend(part.source_message_ids)
+            agent_decision = IntakeDecision(action='draft_order', orders=orders, source_message_ids=source_ids)
+            payload['image_groups'] = [[m['message_id'] for _, m in group] for group in groups]
+            payload['image_groups_verified'] = True
         agent_scope = self.agent_loop.scope(run)
         if agent_decision is None and agent_scope and max(m["timestamp"] for m in messages) >= agent_scope.get("enabled_after", float("inf")):
             if self.agent_loop.run(run, messages):
@@ -347,10 +414,23 @@ class OrderIntake:
         ):
             self.state(run["id"], "ignored")
             return
+        caption_images = [m for m in messages if image_only_caption_pending(m, text)]
         if len(messages) > 12 or any(
-            m["attachments"] or any(a["state"] != "ready" for a in m.get("assets", [])) for m in messages
+            (m["attachments"] and m not in caption_images)
+            or any(a["state"] != "ready" for a in m.get("assets", [])) for m in messages
         ):
             raise ValueError("Incomplete media or oversized message batch")
+        if caption_images:
+            if agent_decision is None or agent_decision.action != 'draft_order' or not agent_decision.orders:
+                raise ValueError('Image quantities require an independently verified order proposal')
+            from hub.agent_loop import verify_action
+            verification = self.context_gate.build(run, messages)
+            verification['verification_images'] = self.store.images(
+                [image_id for m in messages for image_id in m.get('images', [])])
+            verify_action(self.engine.settings, verification, 'propose_order_draft',
+                          {'items': [o.model_dump(mode='json') for o in agent_decision.orders],
+                           'source_message_ids': [m['message_id'] for m in messages]})
+            payload['image_quantity_verified'] = True
         with self.store.db() as db:
             previous = db.execute(
                 "SELECT 1 FROM intake_runs WHERE account=? AND thread_id=? AND id<>? "
@@ -366,10 +446,14 @@ class OrderIntake:
             if m["images"]:
                 images.extend(self.store.images(m["images"]))
                 image_ids.append(n)
-        if len(images) > 2:
-            raise ValueError("More than two order images requires review")
-        if not self.context_gate.check(run, messages):
-            return
+        if any(sum(len(m.get('images', [])) for _, m in group) > 2 for group in groups):
+            raise ValueError("Image group has more than two images; needs review")
+        for group_number, group in enumerate(groups if not payload.get('image_groups_verified') else [], 1):
+            scoped_run = {**run, 'id': run['id'] + ':group:' + str(group_number)} if len(groups) > 1 else run
+            if not self.context_gate.check(scoped_run, [m for _, m in group]):
+                if len(groups) > 1:
+                    self.state(run['id'], 'review', {'reason': 'Image group context needs review'})
+                return
         decision = agent_decision or self.engine.agent.decide(
             {
                 "order_intake_only": True,
@@ -395,9 +479,11 @@ class OrderIntake:
         ids = set(decision.source_message_ids)
         if not ids or not ids <= set(range(1, len(messages) + 1)) or len(messages) not in ids:
             raise ValueError("Invalid order source IDs")
-        # Require a literal product code in the source text. OCR-only codes need review.
+        from hub.meter_product import apply_meter_product
+        meter_mapped = apply_meter_product(decision.orders, [messages[i-1] for i in sorted(ids)])
+        # Explicit fabric-print quantities may resolve MET; other codes require source text.
         for line in decision.orders:
-            if line.ma_san_pham and not re.search(
+            if line.ma_san_pham and not (meter_mapped and line.ma_san_pham == "MET") and not re.search(
                 r"(?<!\w)" + re.escape(key(line.ma_san_pham)) + r"(?!\w)", key(text)
             ):
                 raise ValueError("Product code is not present in source text")
@@ -414,15 +500,9 @@ class OrderIntake:
                 raise ValueError("Số lượng không xuất hiện trong tin nguồn; cần nhân viên kiểm tra")
         if any(not self.accepts(m) for m in messages):
             raise ValueError("Group policy changed during analysis")
-        # Existing ERP API must resolve the actual group before creation; never use its unknown-customer fallback.
-        binding = self.engine.customer_mappings.get(run["account"], run["thread_id"])
+        binding = self.resolve_customer_binding(run, payload["group_name"])
         if binding:
-            self.engine.erp.validate_customer_id(binding["customer_id"])
             payload["customer_binding"] = binding
-        else:
-            if self.engine.settings.inboxes[run['account']]['channel'] in ('whatsapp','viber'):
-                raise ValueError('Nhóm chưa có ánh xạ ID khách ERP; cần nhân viên xác nhận')
-            self.engine.erp.observe_group(payload["group_name"])
         orders = [line.model_dump(mode="json") for line in decision.orders]
         for line in orders:
             line["ghi_chu_mau_do"] = clean_order_note(line["ghi_chu_mau_do"])
@@ -433,6 +513,35 @@ class OrderIntake:
                 "UPDATE intake_runs SET state='awaiting_evidence',payload=? WHERE id=?",
                 (json.dumps(payload, ensure_ascii=False), run["id"]),
             )
+
+    def resolve_customer_binding(self, run, group_name):
+        """Keep explicit group IDs; unmatched names use the owner-approved retail ID.
+
+        Authentication, outages and removed mapped customers must never silently
+        turn into retail orders. Legacy successful Zalo resolution stays intact.
+        """
+        mappings = self.engine.customer_mappings
+        binding = mappings.get(run["account"], run["thread_id"])
+        if binding:
+            self.engine.erp.validate_customer_id(binding["customer_id"])
+            return binding
+        try:
+            self.engine.erp.observe_group(group_name)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code not in (409, 422):
+                raise
+        else:
+            return None
+        retail_id = "aa6e7f8c-67d2-4fe8-85c2-c8c60a604a99"
+        customer = self.engine.erp.validate_customer_id(retail_id)
+        if customer.get("name", "").strip().upper() != "KHACH LE":
+            raise ValueError("Khách lẻ cấu hình không đúng; cần kiểm tra")
+        binding = mappings.set(run["account"], run["thread_id"], retail_id,
+                               customer["name"], expected_version=0)
+        self.engine.note(run["id"] + ":retail-binding", run["conversation"],
+                         "Ánh xạ nhóm vào KHACH LE: chưa có liên kết ID khách và tên nhóm không khớp duy nhất khách ERP. Nhân viên có thể đổi ánh xạ nếu xác định được khách.",
+                         apply_capture=True)
+        return binding
 
     def evidence_request(self, account):
         with self.store.db() as db:
@@ -445,6 +554,9 @@ class OrderIntake:
                 return None
             payload = json.loads(row["payload"])
             messages = select_sources(db, account, row["thread_id"], payload["messages"])
+        if payload.get('addition_fallback'):
+            from hub.order_additions import fallback_sources
+            messages=fallback_sources(messages)
         return {"id": row["id"], "messages": messages, "reference": "INTAKE-" + row["id"][:16]}
 
     def evidence_saved(self, account, identity, data):
@@ -502,8 +614,13 @@ class OrderIntake:
                 return
             if not self.engine.settings.erp_write or not allowed(self.policy(run["account"]), self.engine.settings.inboxes[run["account"]]["channel"], payload["group_name"]) or any(not self.accepts(m) for m in messages):
                 raise ValueError("ERP disabled or policy changed")
-            if not self.context_gate.check(run, messages):
-                return
+            from hub.order_groups import image_groups
+            groups = image_groups(messages)
+            for number, group in enumerate(groups if not (payload.get('image_groups_verified') or payload.get('addition_fallback')) else [], 1):
+                scoped_run = {**run, 'id': run['id'] + ':group:' + str(number)} if len(groups) > 1 else run
+                if not self.context_gate.check(scoped_run, [m for _, m in group]):
+                    self.state(run['id'], 'review', {'reason': 'Image group context needs review'})
+                    return
             binding = self.engine.customer_mappings.get(run["account"], run["thread_id"])
             if binding != payload.get("customer_binding"):
                 raise ValueError("Ánh xạ khách đã thay đổi; cần nhân viên đối chiếu đề xuất cũ")
@@ -545,6 +662,15 @@ class OrderIntake:
             )
             return
         self.state(run["id"], "created", result)
+        if payload.get('addition_fallback'):
+            text=('ĐẶT THÊM — ĐÃ TẠO ĐƠN RIÊNG: '+', '.join(o.get('ma_don_hang',o.get('id','')) for o in result['orders'])+
+                '\nSố lượng bổ sung: '+payload['addition_fallback']['delta']+' cái. Không tăng đơn cũ. Đối chiếu mẫu/ảnh nguồn trước khi in.')
+            with self.store.db() as db:
+                event=db.execute('SELECT id FROM order_additions WHERE account=? AND thread_id=? AND source_message_id=?',
+                    (run['account'],run['thread_id'],payload['addition_fallback']['source_message_id'])).fetchone()
+                db.execute("UPDATE order_additions SET state='new_created',result=?,payload=? WHERE id=?",
+                    (json.dumps(result),json.dumps({'local_notice':{'run':dict(run),'messages':messages,'text':text}},ensure_ascii=False),event['id']))
+            self.additions.notice(run,messages,event['id'],text)
         codes = ", ".join(str(o.get("ma_don_hang", o.get("id", ""))) for o in result["orders"])
         self.engine.note(
             run["id"] + ":created",

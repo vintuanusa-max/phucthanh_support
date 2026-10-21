@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path, PurePosixPath
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, FileResponse
 
 from hub.ai_policy import trial
 from hub.clients import ERP, Chatwoot, Gemini
@@ -48,6 +48,7 @@ def create_app(settings=None, engine=None, start_worker=True):
     async def lifespan(app):
         store.recover()
         engine.order_intake.recover()
+        engine.artwork_checks.recover()
         thread = None
         if start_worker:
             thread = threading.Thread(target=worker, daemon=True)
@@ -89,6 +90,17 @@ def create_app(settings=None, engine=None, start_worker=True):
     @app.get('/adapters/{account}/print-evidence', dependencies=[Depends(require_ingest)])
     def print_evidence(account: str):
         return {'job':engine.print_approvals.evidence_request(account)}
+
+    @app.post('/adapters/{account}/file-previews/claim', dependencies=[Depends(require_ingest)])
+    def claim_file_preview(account: str):
+        if account not in settings.inboxes:
+            raise HTTPException(404, "Unknown account")
+        return {'job': engine.file_previews.claim(account)}
+
+    @app.post('/adapters/{account}/file-previews/{identity}', dependencies=[Depends(require_ingest)])
+    def complete_file_preview(account: str, identity: str, data: dict):
+        engine.file_previews.finish(account, identity, data)
+        return {'stored': True}
 
     @app.post('/adapters/{account}/print-evidence/{identity}', dependencies=[Depends(require_ingest)])
     def print_evidence_saved(account: str,identity: str,data: dict):
@@ -147,6 +159,12 @@ def create_app(settings=None, engine=None, start_worker=True):
             ],
             **store.status(),
         }
+
+    @app.get("/design-briefs", dependencies=[Depends(require_admin)])
+    def design_briefs(conversation: int, limit: int = 50):
+        with store.db() as db:
+            rows = db.execute("SELECT payload FROM design_briefs WHERE conversation=? ORDER BY created DESC LIMIT ?", (conversation, max(1,min(limit,100)))).fetchall()
+        return {"items": [json.loads(row[0]) for row in rows], "execution_allowed": False}
 
     @app.get("/admin/{table}", dependencies=[Depends(require_admin)])
     def recent(table: str):
@@ -269,6 +287,60 @@ def create_app(settings=None, engine=None, start_worker=True):
         except ValueError as exc:
             raise HTTPException(422, "Invalid order policy") from exc
         return {"stored": True, "scope": engine.order_intake.scope(account)}
+
+    @app.get('/adapters/{account}/jpg-exports', dependencies=[Depends(require_ingest)])
+    def pending_jpg(account: str):
+        return {'job':engine.artwork_checks.jpg.pending(account)}
+
+    @app.post('/adapters/{account}/jpg-exports/{identity}', dependencies=[Depends(require_ingest)])
+    async def complete_jpg(account: str, identity: str, request: Request):
+        content=bytearray()
+        async for chunk in request.stream():
+            content.extend(chunk)
+            if len(content)>48_000_000:raise HTTPException(413,'JPG preview limit')
+        try:return engine.artwork_checks.jpg.complete(account,identity,json.loads(content))
+        except (ValueError,KeyError) as exc:raise HTTPException(422,'Invalid JPG report') from exc
+
+    @app.get('/adapters/{account}/pet-exports', dependencies=[Depends(require_ingest)])
+    def pending_pet(account: str):
+        return {'job':engine.artwork_checks.pet.pending(account)}
+
+    @app.get('/adapters/{account}/pet-exports/{identity}/{name}', dependencies=[Depends(require_ingest)])
+    def pet_png(account: str, identity: str, name: str):
+        try:
+            return FileResponse(engine.artwork_checks.pet.png(account,identity,name), media_type='image/png')
+        except ValueError as exc: raise HTTPException(422,str(exc))
+
+    @app.put('/adapters/{account}/pet-exports/{identity}/{name}', dependencies=[Depends(require_ingest)])
+    async def upload_pet(account: str, identity: str, name: str, request: Request):
+        content=bytearray()
+        async for chunk in request.stream():
+            content.extend(chunk)
+            if len(content)>64_000_000: raise HTTPException(413,'TIFF upload limit')
+        try: engine.artwork_checks.pet.upload(account,identity,name,bytes(content))
+        except ValueError as exc: raise HTTPException(422,str(exc))
+        return {'stored':True}
+
+    @app.post('/adapters/{account}/pet-exports/{identity}', dependencies=[Depends(require_ingest)])
+    def complete_pet(account: str, identity: str, data: dict):
+        try: return engine.artwork_checks.pet.complete(account,identity,data)
+        except ValueError as exc: raise HTTPException(422,str(exc))
+
+    @app.get('/adapters/{account}/artwork-checks', dependencies=[Depends(require_ingest)])
+    def pending_artwork(account: str):
+        return {'job':engine.artwork_checks.pending(account)}
+
+    @app.post('/adapters/{account}/artwork-checks/{identity}', dependencies=[Depends(require_ingest)])
+    async def upload_artwork(account: str, identity: str, request: Request):
+        content=bytearray()
+        async for chunk in request.stream():
+            content.extend(chunk)
+            if len(content)>58_000_000:raise HTTPException(413,'Artwork upload limit')
+        try:
+            data=json.loads(content)
+            engine.artwork_checks.received(account,identity,data)
+        except (ValueError,KeyError,TypeError):raise HTTPException(422,'Invalid artwork source')
+        return {'stored':True}
 
     @app.get("/adapters/{account}/order-evidence", dependencies=[Depends(require_ingest)])
     def order_evidence(account: str):

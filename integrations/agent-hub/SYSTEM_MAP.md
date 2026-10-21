@@ -347,3 +347,119 @@ See VIBER.md. Scoped CDG capture, NAS archive, inbox 3/conversation 60. Outbound
 Local-only outgoing work: viber_desktop/send_ledger.py commits an uncertain attempt before native invocation and rejects replay or changed payload for the same delivery ID; confirmation requires a source event ID. Not wired to production. Research harness ../viber-research/verify_dispatch.py queues only a GUI-thread dry run after an exact manual binding marker; actual transport verification remains pending. AI/public delivery remains disabled.
 
 2026-10-15 ERP line notes: removed automatic raw source-message transcript and NAS evidence path from order_intake and legacy engine draft notes. Evidence remains in Hub/NAS and Chatwoot private notes. clean_order_note strips technical lines from pending intake payloads before submission. ERP router automatic missing-price reminder removed, backed up on NAS; requires owner restart. Hub deployed; 28 intake regression tests passed. Existing ERP orders unchanged.
+## 16/10/2026 — Ghép cụm ảnh và số lượng
+
+- [x] Ảnh mới sau phần chữ có số tạo một cụm ứng viên mới; các ảnh liên tiếp trước số lượng vẫn cùng cụm. Đây chỉ là ranh giới ngữ cảnh, không tự khẳng định mỗi ảnh là một mẫu.
+- [x] Với nhiều cụm: Gemini phân tích từng cụm riêng, tối đa 4 cụm/12 tin, tối đa 2 ảnh mỗi cụm. Ảnh nhiều góc của cùng mẫu được đọc chung; không tự chia số lượng theo thứ tự ảnh.
+- [x] Số lượng đề xuất phải xuất hiện trong chữ của chính cụm; không vay số lượng từ cụm khác. Gemini kiểm chứng độc lập từng đề xuất với ảnh trước khi gửi vào luồng ERP.
+- [x] Yêu cầu chỉnh mẫu giữ trong ghi chú; không có worker tự sửa file.
+- [x] Gộp các dòng hợp lệ vào cùng request_id bền vững; giữ toàn bộ nguồn và bằng chứng PNG/NAS. Nếu một cụm không chắc chắn thì chưa tạo phần còn lại để tránh phục hồi gây trùng.
+- [x] Không thay đổi gửi AI công khai: chỉ ghi chú nội bộ Chatwoot.
+- [x] Kiểm thử: 46 hồi quy intake/agent và 5 kiểm thử nhóm ảnh đạt. Đã triển khai Hub; không cần restart ERP.
+- [x] Lượt A THỨC 59897dbf50f1 đã tạo DH-2610-251/252/253/254: 66 chuyển nhiệt, 500 PET, 125 trắng, 125 đen. API chỉ đọc xác nhận đúng khách A THỨC và cả bốn ở Len mau. Đã đối chiếu hai đơn khác trong ngày trước phục hồi; giữ nguyên request_id, không phát lại nguồn.
+
+Giới hạn: album hơn 2 ảnh trong cùng cụm hoặc thiếu quan hệ ảnh-số lượng vẫn chuyển nhân viên. Dấu số trong kích thước/ngày không đủ làm căn cứ đặt hàng; bước Gemini kiểm chứng phải chấp thuận ý định và đơn vị.
+
+Luồng nhiều cụm dùng kiểm chứng đề xuất độc lập với ảnh + lịch sử cùng nhóm + ứng viên đơn trước, thay classifier một intent cũ. Luồng một cụm giữ nguyên. Tên mẫu phải ngắn, yêu cầu chỉnh thiết kế đặt trong ghi chú.
+
+## 16/10/2026 — Hồ sơ yêu cầu thiết kế nội bộ
+- [x] `hub/design_briefs.py`: tự trích xuất trước phân tích intake cho nhóm được phép chạy agent. Một lần quét theo tài khoản/nhóm/ID tin/revision; không phát lại lịch sử tự động.
+- [x] Gemini đọc ngữ cảnh tối đa 50 tin/6 giờ và tối đa 6 ảnh có nhãn ID nguồn. Tách yêu cầu theo mẫu; không coi báo giá, vật tư, giao nhận hoặc OK in đơn thuần là job thiết kế.
+- [x] Mỗi yêu cầu có trích dẫn text được kiểm chứng với ID nguồn; ảnh/file lấy từ capture cùng nhóm, không lấy đường dẫn do AI viết. Đọc chữ trên ảnh chỉ là mục cần nhân viên xác minh.
+- [x] Lưu `design_scans`, `design_briefs` trong SQLite và JSON `/data/design-briefs/<id>.json` trên volume Hub. API GET `/design-briefs?conversation=<id>` dùng Bearer admin, tối đa 100 hồ sơ/lần.
+- [x] Hồ sơ luôn `needs_staff_review`, `execution_allowed=false`; liên kết hồ sơ trước chỉ là đề xuất, không ghi đè. Không sửa/xuất file, hỏi khách, hay ghi ERP từ mô-đun này.
+- [x] Ghi chú riêng Chatwoot tiêu đề HỒ SƠ THIẾT KẾ — CẦN KIỂM TRA NỘI BỘ và Open hội thoại. Lỗi trích xuất lưu review + ghi chú, không chặn luồng ERP độc lập. Tác động ghi chú dùng khóa chống lặp; kết quả không rõ không gửi lại tự động.
+- [x] 4 kiểm thử mới và 51 hồi quy đạt; kiểm thử dùng thư mục tạm workspace vì temp mặc định Windows không có quyền.
+- [ ] Worker sửa file/xuất in, duyệt tự động, gửi câu hỏi thiết kế cho khách: chưa triển khai theo yêu cầu chủ hệ thống.
+Giới hạn: không bảo đảm phát hiện mọi yêu cầu nằm ngoài cửa sổ ngữ cảnh hoặc chỉ có ảnh chưa đọc được; file/ảnh cần kiểm đúng mẫu/phiên bản trước đưa cho worker. JSON không chứa khóa API/phiên, không đưa dữ liệu khách vào Git. Hồ sơ là đề xuất có nguồn, chưa phải lệnh thiết kế đã được duyệt.
+
+Kiểm chứng triển khai: schema Gemini đã được giản lược ràng buộc phục vụ (vẫn kiểm tra đầy đủ bằng Pydantic). 5 kiểm thử riêng đạt. Hồ sơ thử `a601f2d1264f9e64927579d9a8b1e67960ace1c129e30fb0a4433647231890eb`, nhóm IN TÚI (EM KIỀU), lấy tin #1391 và ảnh #1390; ghi chú #1846 được API xác nhận private. Hồ sơ yêu cầu màu theo túi mẫu, PET ngang 25cm; thiếu file gốc cần nhân viên xác minh. JSON trong volume tồn tại, API có token trả đúng hồ sơ, không token bị từ chối. Hub health 200. Không tạo/sửa ERP hay gửi khách trong phép thử. Một ghi chú kiểm tra lỗi ban đầu được giữ để truy vết; hồ sơ thành công là #1846.
+
+## 16/10/2026 — Hồi cứu và cấu trúc in túi
+- [x] 11 tình huống rà soát có hồ sơ; 10 ghi chú mới 1847–1856, tái sử dụng EM KIỀU #1846. A THỨC đã làm thủ công chỉ là tham khảo.
+- [x] `bag_design.py`: field có nguồn; đề xuất artboard theo mảnh vải, cộng cữ miệng theo mốc đo, chia đôi chỉ khi có xác nhận/trục, quai khổ 160cm khi có in quai. Tất cả ready_for_execution=false.
+- [x] `production_slips.saved` xét hồ sơ thiết kế riêng sau khi lưu phiếu; không thay đường tạo ERP.
+- [x] 9 kiểm thử schema/hồ sơ/túi và 32 hồi quy intake/phiếu đạt. Gemini chấp nhận schema mở rộng.
+- [ ] Chưa làm worker PDF/AI, nhiều artboard thực, duyệt và xuất file. Chi tiết: DESIGN_BRIEFS_BAG_PRINT.md.
+
+Bổ sung: bag_panels/placements giữ cữ theo từng đối tượng và mảnh; tính cữ top với mốc rõ, không tự đổi cữ ngang từ thành phẩm sang mép vải. API lưu phiếu chỉ enqueue job design_brief, Gemini xử lý ở worker để không giữ kết nối sao chép file. 42 kiểm thử cuối đạt. Ví dụ từ chủ xưởng TDVB-DB.10 ghi chú riêng #1858; phép đọc Gemini phiếu này timeout và đã đánh dấu review. Hướng dẫn/giới hạn trong DESIGN_BRIEFS_BAG_PRINT.md.
+
+## 16/10/2026 — Đọc file gốc PDF/AI
+- [x] Parser Poppler read-only + Windows bridge đọc đúng asset/hash trên NAS. Có tiến trình nền và Startup riêng, không chạm phiên chat.
+- [x] Hàng đợi `artwork_checks`, API ingest có xác thực, kết quả gắn hồ sơ và note riêng; luôn execution_allowed=false.
+- [x] Đối chiếu thật TDVB-DB.10 thành công: PDF là maket, không là file dàn in; parser đọc 65.6368×79.8904cm, không nhầm với vải47.5×46. Kiểm thử đọc AI THOCAM PDF-compatible thành công.
+- [x] Giới hạn32MiB, 4 trang, nguồn cùng nhóm; lỗi/mâu thuẫn/thiếu nguồn chuyển kiểm tra. V1 lỗi định dạng đã được thay bằng v2 có schema nguồn; lưu dấu vết cũ.
+- [ ] Native AI layers/links/font chỉnh sửa, sửa file/xuất in chưa làm. Xem ARTWORK_INSPECTION.md.
+
+2026-10-16: Added artwork_objects read-only subprocess inventory (PyMuPDF pinned), source-bound object IDs and file-space cm in artwork_checks private review. DESIGNER integration remains inspection only; no production edit/export. See ARTWORK_INSPECTION.md.
+
+## Đặt thêm theo ảnh trích dẫn (2026-10-17)
+- `hub/order_additions.py`: chạy trước nhánh tạo đơn; chỉ tăng đơn đã liên kết chắc chắn ảnh nguồn, đúng nhóm và khách ERP. Không đoán đơn gần nhất. Đơn nhiều dòng cần xác minh tập file các mặt cùng tăng.
+- Đọc riêng số lượng thêm và tổng khách chốt; tổng phải bằng số hiện tại + phần thêm. Thiếu liên kết hoặc mâu thuẫn: ghi chú nội bộ và báo nhóm sản xuất cần đối chiếu, không tự tăng.
+- ERP GET/POST `/api/v1/integrations/zalo/agent/order-quantity`: khóa giao dịch, kiểm tra số lượng trước cập nhật, lưu receipt theo tin nguồn chống cộng trùng. Không tự thử lại khi kết quả ghi chưa rõ.
+- Hàng đợi thông báo hai kênh độc lập; phục hồi thông báo từ receipt đã hoàn tất sau gián đoạn, không gọi lại ERP. AI vẫn chỉ ghi chú nội bộ.
+- Ca A Thức DH-2610-243: đã cập nhật hai mặt 1000 → 1070 bằng ERP hiện hữu; thông báo chỉ in thêm 70 bộ đã xác nhận cả Zalo/WhatsApp. Sau restart, API GET xác nhận hai dòng 1070; không gọi POST lại ca này.
+- Kiểm chứng: 39 kiểm thử cục bộ đạt (phân tích, đối chiếu, phục hồi thông báo và hồi quy). API POST mới chưa thử ghi thêm trên đơn sản xuất.
+
+## Cập nhật quy tắc đặt thêm: file in/ghi chú và đơn riêng (2026-10-17)
+- Ưu tiên liên kết ảnh nguồn đã xác minh. Nếu chưa có, lấy định danh nguyên văn: tên file đính kèm, tên file trong tin hoặc cụm tên mẫu đặt trong dấu ngoặc kép; API `GET /agent/order-match` tìm không dấu trong đường dẫn file in, ghi chú dòng và ghi chú đơn, chỉ đúng customer_id.
+- Không suy diễn tên mẫu từ ảnh ở nhánh tìm này. Không chọn theo tên khách gần giống hoặc số lượng giống. Nhiều ứng viên/không đủ định danh → đơn riêng; nhiều dòng chưa xác định các mặt cùng tăng cũng → đơn riêng.
+- Đơn riêng ở Lên mẫu, số lượng chỉ bằng phần thêm (70, không phải tổng 1070), mã chưa biết để Chờ mã, bằng chứng giữ tin nguồn. Trích dẫn không tải được được ghi rõ để bổ sung mẫu trước in, không bịa ảnh.
+- Khóa tin nguồn dùng chung cho nhánh tăng và nhánh tạo riêng. Lỗi mạng/API, kết quả cập nhật chưa rõ, số tổng mâu thuẫn không được coi là không tìm thấy; giữ kiểm tra nhân viên để tránh tạo kép.
+- Sau tạo đơn riêng, chuyển thông báo cùng bằng chứng tới File In hai kênh; AI vẫn riêng tư. Khôi phục hàng đợi từ receipt, không ghi lại ERP.
+- Kiểm thử cục bộ: 47 đạt. API tìm mới chờ chủ hệ thống restart ERP; chưa kiểm chứng tìm trên API sản xuất. Không chạy lại các tin cũ đã hoàn tất.
+
+### Giới hạn đã được chủ hệ thống xác nhận: 3 ngày
+- Ngày đặt hàng: hôm nay và 2 ngày trước theo giờ Việt Nam; không phải toàn lịch sử hay 72 giờ trượt. Tìm file/ghi chú lọc ở SQL; liên kết ảnh cũng kiểm tra tuổi đơn qua snapshot. POST kiểm tra lại trước tăng.
+- Ngoài khoảng → đơn Lên mẫu riêng chỉ số lượng thêm. Không có trường recent (ERP chưa nạp API) → dừng đối chiếu, không đoán kết quả.
+- Chống trùng đơn mới trong ngày giữ nguyên; ID tin nguồn chống gửi lại không giới hạn ngày.
+
+- Xác minh sau restart 17/10/2026: GET order-match tìm ENVIRONMENTAL SOLUTION đúng khách A Thức → DH-2610-243; snapshot recent=true, hai dòng vẫn 1070.00. Chỉ đọc, không ghi hoặc gửi lại thông báo.
+
+
+
+## File In quality monitor — 17/10/2026
+See KPI-VA-LOI-SAN-XUAT.md. Enabled only new messages in verified Zalo/WhatsApp File In IDs. Blocks ordering/AI replies/approval loops by ID. Internal candidates + idempotent ERP queue; annual 100 KPI, no deductions. ERP restart pending.
+
+
+## Đơn có ảnh/số lượng nhưng thiếu tên hoặc mã — 17/10/2026
+- Agent không hỏi tên mẫu/mã ERP khi đã có mẫu trong ảnh và số lượng đặt rõ. ma_san_pham=null để ERP dùng Chờ mã; ten_mau rỗng để ERP tự đặt tên.
+- Nếu agent vẫn gọi hỏi hai trường này, tool trả reconsider_order để vòng lặp chọn lại công cụ; không silent rồi bỏ sót. Các câu hỏi ngoài phạm vi khác vẫn bị chặn.
+- 19 kiểm thử agent loop đạt, gồm câu hỏi trường tùy chọn và chính sách trả lời nội bộ. Không thay cơ chế nguồn/request_id chống lặp; không replay lịch sử hàng loạt.
+
+
+## Phục hồi ảnh trích dẫn chính xác — 17/10/2026
+- Trước phân tích đơn, nối lại ảnh bằng message_id/client_message_id trong cùng tài khoản/nhóm; từ chối nhiều kết quả, sai người, nguồn bị sửa/thu hồi hoặc không có media. Sao chép media liên kết vào capture trích dẫn, giữ nguyên nội dung/ID tin. Không ghi dữ liệu Zalo Desktop.
+- Ảnh trích lại cùng mẫu trong cụm không tách thành cụm đặt mới. 30 kiểm thử intake và hồi phục quote đạt; không gửi công khai.
+- KIM OANH: xử lý lại đúng 25 bộ × 6 chi tiết theo BIG_BANG.pdf; hợp nhất lời giục cùng khách ngay sau tin chốt, giữ request_id ban đầu.
+
+## DESIGNER proposal v1 — 17/10/2026
+- Source: U:\DESIGNER\proposal; runtime in hub/designer_inputs.py, designer_proposal.py and artwork_checks.py.
+- Existing ArtworkInspector transports hash-checked NAS files. New briefs accept PDF-compatible AI/PDF, raster, DOCX/XLSX/PPTX embedded images. Old non-PDF sources are not replayed (persistent activation timestamp).
+- Gemini selects validated object IDs and proposes a method; mismatched/unknown source remains unresolved. Dimensions are file-space only.
+- JSON /data/designer-proposals/{id}.json and design_briefs.artwork_checks[].designer_proposal. Private Chatwoot note + source previews only; stable effect ID prevents blind repeated delivery.
+- No ERP writes, production export, source edits or customer replies in this module. Native AI/Office old formats and uncertain mockup artwork require review.
+
+## 19/10/2026 — INJAE / chuẩn hóa Chờ mã
+- IntakeOrderLine chuyển đúng nhãn Chờ mã / ERP Chờ mã (kể cả Unicode tổ hợp) về null; mã hàng thật vẫn giữ kiểm tra nguồn. Prompt không điền nhãn trạng thái vào mã sản phẩm.
+- 11 kiểm tra chuẩn hóa/giữ nguyên mã và lượng đạt. Đã cập nhật source, mirror, runtime và image Docker.
+- Khôi phục đúng run ec0b6e2705741dae3cec47eaaf35422a1e4e3cf19424bce64d8fc4eb9c02e42a; giữ request_id, không replay lịch sử.
+- ERP DH-2610-266 / 4b1d27d6-0d4a-4902-8a33-db8419276686: INJAE, lô 1205, 4 mét trên vải kim ánh, Chờ mã, Lên mẫu. Trước tạo, danh sách ERP khách INJAE có đơn mới nhất ngày 17/10, chưa có đơn ngày 19/10.
+- Ghi chú :created là private=true nhưng state=uncertain: Chatwoot connection refused. Redis báo Bad file format appendonly.aof.3.incr.aof. Chưa sửa/truncate AOF. Sau phục hồi Chatwoot cần đối chiếu history trước khi phát lại ghi chú; tuyệt đối không tạo lại đơn.
+19/10/2026 bổ sung: Theo xác nhận chủ hệ thống, đơn DH-2610-266 đã đổi dòng 9e83be11-b390-444a-8dce-f69ebe75083b từ Chờ mã sang MET qua UI ERP, giữ SL 4, ghi chú lô 1205 / vải kim ánh và trạng thái Lên mẫu. ERP áp giá riêng 25.000đ/m, tổng 100.000đ. Không tạo đơn mới. Quy tắc suy ra MET từ yêu cầu in theo mét chưa được bổ sung vào bộ phân loại tự động trong lần chỉnh dòng này.
+
+## 19/10/2026 — tự nhận MET cho in mét trên vải
+- hub/meter_product.py: một dòng đơn, yêu cầu khách in rõ N mét/Nm trên vải, số lượng dòng khớp nguồn => mã MET thay null; hỗ trợ số thập phân dấu phẩy/chấm.
+- Không ghi đè mã khác; không lan số lượng qua nhiều mẫu. Không suy từ số đo khổ/ngang/cao, giao vải, hỏi giá, phủ định, m2/mm, tin nhân viên hoặc tin thu hồi.
+- order_intake áp quy tắc sau xác minh source IDs; ngoại lệ kiểm tra mã nguyên văn chỉ dành MET có bằng chứng khớp. Agent prompt được hướng dẫn chọn MET; các guard khách hàng/chống trùng/ERP Lên mẫu giữ nguyên.
+- 46 kiểm thử đạt, gồm luồng intake thực với ERP giả lập. Runtime và image đã cập nhật; hash ba file khớp. Không replay đơn cũ, không tạo đơn thử sản xuất.
+- AI giữ chế độ ghi chú nội bộ hiện có. Redis Chatwoot vẫn lỗi AOF từ trước, cần phục hồi riêng; không tuyên bố ghi chú mới đã đăng thành công.
+
+## 19/10/2026 — phục hồi Redis và ghi chú INJAE
+- Sao lưu toàn volume Redis: backups/redis-before-repair-20261019.tgz, SHA256 42918AE200C9E83C9AB0AC2ADE36DE8BB92C08231BFCD98B5A42CEFDB547715C; bản máy và NAS khớp.
+- RDB hợp lệ. AOF incr 53.050.402 byte, phần hợp lệ 53.050.300 byte. Sửa trên bản sao bằng redis-check-aof --fix, xác minh chỉ bỏ 102 byte cuối lỗi và prefix nguyên vẹn, rồi thay file khi Redis dừng. Không sửa PostgreSQL/tin nhắn.
+- Redis healthy, AOF enabled, last write ok; Rails/Sidekiq/hub hoạt động lại.
+- Đối chiếu hết 141 tin INJAE trước gửi: chưa có DH-2610-266. Khôi phục cùng effect :created, chỉ gửi note private #2990. Kiểm tra sau: 142 tin, đúng một note DH-2610-266, tin cũ #69 còn nguyên.
+- ERP đã chuyển đơn sang dang_chay_giay với 4 mét và file NEO_n169 ngua horse - PA1.prn; không sửa/chạy lại/tạo đơn. Ghi chú phản ánh trạng thái hiện tại.
+
+19/10/2026: Rà soát sau Redis xem RA-SOAT-SAU-REDIS-20261019.md. Khôi phục 13 tin; mapping TRAN THACH theo ID, đơn DH-2610-267 3700 Lên mẫu. Duy Hiếu 50c chờ đúng ảnh trích dẫn, note nội bộ #3016. Không replay INJAE.
