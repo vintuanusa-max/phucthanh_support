@@ -1,3 +1,5 @@
+> Cập nhật tài liệu 23/10/2026: xem [Tổng quan hệ thống](TONG_QUAN_HE_THONG.md) và checklist hiện hành được liên kết tại đó. Các mục bên dưới giữ làm lịch sử; ghi chú “chờ triển khai” cũ phải đối chiếu bản cập nhật hiện hành. Lượt này chỉ cập nhật tài liệu, không thay đổi dịch vụ hay dữ liệu ERP.
+
 # Phúc Thành Support — bot Zalo / WhatsApp
 
 > Repo gồm bot web gốc và [mô-đun tích hợp mới](integrations/agent-hub/README.md) cho Chatwoot, Gemini, Desktop, NAS, ERP và duyệt in hai kênh. Các kế hoạch trong `docs/` là tài liệu lịch sử; xem README của mô-đun tích hợp để biết trạng thái mới.

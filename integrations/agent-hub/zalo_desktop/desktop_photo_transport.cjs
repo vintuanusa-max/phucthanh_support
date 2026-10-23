@@ -31,7 +31,7 @@ async function run(input){
     // Failsafe cleanup even if the transport process disappears.
     await call('Runtime.evaluate',{expression:"globalThis.__ptInspectorWatchdog=setTimeout(()=>{delete globalThis.__ptInspectorWatchdog;process.mainModule.require('inspector').close()},60000);globalThis.__ptInspectorWatchdog.unref(); true",returnByValue:true});
     const renderer='('+rendererSender.toString()+')('+JSON.stringify(input)+')';
-    const selector="Array.from(document.scripts).some(s=>s.src.split('?')[0].endsWith('/render.b7bec208c4c8f73e09f8.js'))";
+    const selector="Array.from(document.scripts).some(s=>s.src.split('?')[0].endsWith('/render.f32c58b63b6f4273a8a4.js'))";
     const expr="(async()=>{const all=process.mainModule.require('electron').webContents.getAllWebContents();let chosen=null;for(const w of all){const yes=await w.executeJavaScript("+JSON.stringify(selector)+");if(yes){if(chosen)throw Error('Multiple renderers');chosen=w;}}if(!chosen)return {state:'blocked',detail:'Main renderer unavailable'};return chosen.executeJavaScript("+JSON.stringify(renderer)+");})()";
     const r=await call('Runtime.evaluate',{expression:expr,returnByValue:true,awaitPromise:true});
     if(!r.exceptionDetails && r.result?.value)result=r.result.value;

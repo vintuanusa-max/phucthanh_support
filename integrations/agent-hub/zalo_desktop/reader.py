@@ -29,6 +29,9 @@ def capture(row, thread, cfg, secret, db=None):
             if group
             else (sender if sender and not outgoing else "Zalo " + thread)
         )
+    from hub.order_policy import key, capture_allowed as policy_capture_allowed
+    policy = cfg.get('order_policy', {})
+    internal = key(sender) in {key(n) for n in policy.get('zalo_internal_members', [])}
     attachments = []
     images = []
     assets = []
@@ -49,6 +52,10 @@ def capture(row, thread, cfg, secret, db=None):
             },
         ):
             archive_scope = cfg["order_intake"]
+    # Media context is independent of permission to create an ERP order.
+    if (row['msgType'] == 2 and (internal or outgoing) and group
+            and policy_capture_allowed(policy, 'zalo', thread, name)):
+        archive_scope = {'enabled_after': max(1792688400, cfg.get('order_intake', {}).get('enabled_after', 0))}
     archive_active = bool(archive_scope and stamp / 1000 >= archive_scope["enabled_after"])
     if row["msgType"] == 1 and row["ev"] == 0:
         text = decode_field(row["message"], secret, row["ev"])
@@ -109,7 +116,7 @@ def capture(row, thread, cfg, secret, db=None):
         "sender": sender[:300],
         "sender_id": str(row["fromUid"]),
         "direction": "outgoing" if outgoing else "incoming",
-        "origin": "staff" if outgoing else "customer",
+        "origin": "staff" if outgoing or internal else "customer",
         "text": text,
         "attachments": attachments,
         "images": images,
@@ -151,6 +158,7 @@ class Reader:
         self.secret = None
         self.keys = {}
         self.last_probe = 0
+        self.zalo_session = None
         self.last_names = 0
         self.names_mark = None
         self.group_names = {}
@@ -179,6 +187,12 @@ class Reader:
         from hub.order_policy import capture_allowed
 
         if self.capture_policy is None:
+            return False
+        from hub.order_policy import key
+        internal = {key(n) for n in self.capture_policy.get('zalo_internal_members', [])}
+        if (key(message.get('sender', '')) in internal
+                and message.get('text') == '[Tin Zalo loại 2; xem trên ứng dụng Zalo]'
+                and message.get('attachments') == ['zalo-desktop:unsupported:2']):
             return False
         return capture_allowed(
             self.capture_policy, "zalo", message["thread_id"],
@@ -226,6 +240,23 @@ class Reader:
 
     def read_changed(self):
         from .memory import MemoryReader
+        from .runtime import running_session
+
+        session = running_session(self.cfg['zalo_exe'])
+        if session is None:
+            self.secret = None
+            self.keys.clear()
+            self.zalo_session = None
+            raise SnapshotError('waiting_for_single_running_zalo_session')
+        identity, exe = session
+        if identity != self.zalo_session:
+            self.secret = None
+            self.keys.clear()
+            self.last_probe = 0
+            self.last_names = 0
+            self.names_mark = None
+            self.zalo_session = identity
+        self.cfg['zalo_exe'] = exe
 
         if not self.secret:
             if time.monotonic() - self.last_probe < 60:

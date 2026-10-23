@@ -1,0 +1,41 @@
+# Checklist hiện hành — 23/10/2026
+[x] = đã triển khai/có bằng chứng đã nêu; không có nghĩa mọi trường hợp đầu vào đã được kiểm chứng. [ ] = còn hạn chế hoặc cần kiểm chứng tiếp. Lần này cập nhật tài liệu, không thử ghi ERP/xuất file mới.
+
+## Thu nhận và ánh xạ
+- [x] Đọc Zalo/WhatsApp/Viber có checkpoint; watchdog và nhận đường dẫn phiên bản được triển khai theo tài liệu phục hồi.
+- [x] Ánh xạ IDnhóm trong config.json, fallback KHACH LE; nhóm bỏ qua ưu tiên; không đổi đơn cũ.
+- [x] Ảnh nhân viên Zalo tách khỏi quyền lên đơn; backfill55 ảnh đúng hôm nay, khóa nhập trùng.
+- [ ] Hai tin ảnh cục bộ File In chưa khôi phục; không đoán.
+- [ ] Không bảo đảm mọi cập nhật app đều tương thích bộ gửi/giải mã.
+
+## Lên đơn ERP
+- [x] Tách luồng ERP khỏi thiết kế; lượng từ chữ/ảnh, phiếu lệnh, Lên mẫu/Chờ mã/tên mặc định.
+- [x] Ảnh chờ30phút không bổ sung đi phân tích/kiểm chứng, không chỉ lưu đề xuất.
+- [x] Chống trùng ID nguồn/request; đối chiếu ngày; tìm đặt thêm3ngày; khóa trạng thái.
+- [x] Tin nhân viên không tạo đơn; AI ghi chú riêng.
+- [ ] Chưa coi có quét hồi tố toàn bộ mỗi giờ; chưa hỗ trợ tự động mọi yêu cầu hủy/giảm.
+
+## Xuất file
+- [x] Có tài liệu2luồng, PDF/AI/Drive, chọn cụm Illustrator, điều phối8096, nối tiến trình ERP.
+- [x] PET artwork-only/alpha/spot; JPG CMYK/quy tắc túi; không lật gương.
+- [x] Có lưu phiên bản, chống yêu cầu xuất lặp, preview riêng và Duyệt/copy file.
+- [x] OpenAI có cổng xác nhận không có file +receipt/cache chống phí trùng.
+- [ ] Theo dõi ca OpenAI tự động từ hội thoại mới; không xem test mock là kiểm chứng end-to-end.
+- [ ] Canva, font thiếu, mockup khó, sửa từng chi tiết tự do và nguồn mơ hồ chưa được coi tự xử lý hoàn chỉnh.
+- [ ] Các checklist cũ ghi chờ restart/copy phải đọc cùng phần cập nhật sau; không tự đánh dấu lại bằng suy đoán trong lượt làm tài liệu.
+
+## Duyệt in
+- [x] Tự nhận câu chốt, ghép ảnh nhân viên, chờ yên120s; sender khoảng15s.
+- [x] Tự gửi File In cả Zalo/WhatsApp; mốc18h23/10 cố định.
+- [x] BÍCH VÂN và Chú Dũng confirmed hai kênh; không tạo lại ERP.
+- [x] Giữ khóa theo hồ sơ/kênh; không reset uncertain; loại hồ sơ trước mốc.
+- [ ] Hồng Ánh cần đối chiếu ảnh sau OK; Chị Yến còn chỉnh màu. Không tự gửi lại các review cũ.
+- [ ] Câu tự nhiên ngoài quy tắc, nhiều mẫu, ảnh chưa về vẫn cần đối chiếu; chưa tự phục hồi mọi review sau khi ảnh tới.
+
+## Khi vận hành hằng ngày
+- [ ] Xem heartbeat bộ đọc/worker và hàng đợi lỗi tại8096.
+- [ ] Đối chiếu review/uncertain trong Chatwoot, kiểm tra nguồn trước retry.
+- [ ] Kiểm tra file mới bằng preview và duyệt rõ phiên bản trước copy.
+- [ ] Sau cập nhật: kiểm tra một ca thật phù hợp, ghi bằng chứng, giữ1image dự phòng; không dọn volume.
+
+Tra cứu: [Tổng quan](../TONG_QUAN_HE_THONG.md).

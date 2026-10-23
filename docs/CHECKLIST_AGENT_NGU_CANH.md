@@ -1,3 +1,5 @@
+> Cập nhật tài liệu 23/10/2026: xem [Tổng quan hệ thống](../TONG_QUAN_HE_THONG.md) và checklist hiện hành được liên kết tại đó. Các mục bên dưới giữ làm lịch sử; ghi chú “chờ triển khai” cũ phải đối chiếu bản cập nhật hiện hành. Lượt này chỉ cập nhật tài liệu, không thay đổi dịch vụ hay dữ liệu ERP.
+
 # Checklist hiện hành — 14/10/2026
 
 ## Giai đoạn 1
@@ -54,3 +56,12 @@ Không dùng các mô tả pilot hai nhóm hoặc chỉ lưu đề xuất của 
 - [ ] Nhân viên xác nhận khoảng giá mơ hồ và giá riêng CANAVI.
 - [ ] Kiểm chứng ca báo giá thật tiếp theo trước khi cho phép trả lời nhóm khách.
 Chi tiết: NAM_TINH_HUONG_VA_BAO_GIA_20261015.md.
+
+## 21/10/2026 — Sáu phần hoàn thiện
+Kế hoạch và checklist chi tiết: KE_HOACH_6_PHAN_HOAN_THIEN_20261021.md. Chưa coi các phần này là hoàn thành triển khai. Giữ ERP Lên mẫu, file chỉ nội bộ, không RIP/gửi khách.
+
+## 21/10/2026 — Hai luồng nghiệp vụ hiện hành
+Thay cách trình bày sáu phần bằng HAI_LUONG_DON_HANG_VA_FILE_MAU.md. Checklist trong tài liệu mới là trạng thái hiện hành. Hub đã áp dụng; API khóa sửa len_mau chờ restart ERP. Canva dạng trang thiết kế và tự vẽ lại chưa hoàn tất.
+
+
+21/10/2026: ma trận mới thay len_mau_only. Tăng: len_mau/mau_co_san/dang_chay_giay; giảm/hủy/xóa: len_mau/mau_co_san. Đã kiểm thử, hub đã chạy; ERP chờ restart. Chi tiết trong HAI_LUONG_DON_HANG_VA_FILE_MAU.md.

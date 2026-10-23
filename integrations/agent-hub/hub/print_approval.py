@@ -3,6 +3,8 @@ import hashlib
 import json
 import re
 import time
+import os
+from pathlib import Path
 
 from hub.order_policy import capture_allowed, key
 
@@ -34,11 +36,20 @@ def select_reprint(message, history):
 
 def is_confirmation(text):
     text = key(text)
-    if re.search(r'\b(chưa|không|đừng|khoan|hủy|huỷ|đợi|chờ|sửa|thử|test)\b|\?', text):
+    if re.search(r'\b(chưa|không|đừng|khoan|hủy|huỷ|đợi|chờ|sửa|thử|test|nếu)\b|\?', text):
         return False
     if re.fullmatch(r'ok(?:ay)?[,.! ]*(?:nhé|nhe|nha)[.! ]*', text):
         return True
-    return bool(re.search(r'\b(ok[,.! ]*in|in\s+(nhé|nhe|nha|đi)|chốt\s+(in|mẫu)|duyệt\s+mẫu|in\s+theo\s+mẫu)\b', text))
+    return bool(re.search(r'\b(ok[,.! ]*in|in\s+(nhé|nhe|nha|đi)|in\s+(?:luôn|ln)\s+(?:nhé|nhe|nha|đi|giúp)|chốt\s+(in|mẫu|luôn|đi|nhé|nhe|nha|rồi)|duyệt(?:\s+(?:mẫu|rồi))?|làm\s+gấp|in\s+gấp|cho\s+chạy|chạy\s+gấp|in\s+theo\s+mẫu)\b', text))
+
+
+def staff_context(messages, policy, channel):
+    internal = {key(n) for n in policy.get(channel + '_internal_members', [])}
+    return [{**m, 'origin': 'staff'} if key(m.get('sender', '')) in internal else m for m in messages]
+
+
+def contextual_confirmation(text):
+    return bool(re.search(r'\b(làm gấp|in gấp|cho chạy|chạy gấp|chốt\s+(?:luôn|đi|nhé|nhe|nha|rồi))\b', key(text)))
 
 
 def author(message):
@@ -52,7 +63,7 @@ def select_approval(confirmation, history):
     if confirmation.get('revision') or confirmation.get('recalled'):
         raise ValueError('Tin xác nhận đã sửa/thu hồi')
     same = [m for m in history if (m['account'],m['thread_id']) == (confirmation['account'],confirmation['thread_id'])
-            and confirmation['timestamp']-1800 <= m['timestamp'] <= confirmation['timestamp']]
+            and confirmation['timestamp']-86400 <= m['timestamp'] <= confirmation['timestamp']]
     same.sort(key=lambda m:(m['timestamp'],m['message_id']))
     quote = confirmation.get('quoted_image')
     if quote:
@@ -64,6 +75,8 @@ def select_approval(confirmation, history):
         if not photos:
             raise ValueError('Chưa có ảnh mẫu đã kiểm chứng')
         last=photos[-1]
+        if contextual_confirmation(confirmation['text']) and last.get('origin') != 'staff':
+            raise ValueError('Câu chốt cần gắn với mẫu nhân viên gửi duyệt')
         if re.fullmatch(r'ok(?:ay)?[,.! ]*(?:nhé|nhe|nha)[.! ]*',key(confirmation['text'])):
             if confirmation['timestamp']-last['timestamp']>300:
                 raise ValueError('Câu OK chưa gắn rõ với ảnh mẫu gần đây')
@@ -103,7 +116,15 @@ class PrintApprovals:
         for account,cfg in self.engine.settings.inboxes.items():
             route=cfg.get('print_forward',{})
             if route.get('enabled_after') and route.get('thread_id'):
-                return {'account':account,**route}
+                route={'account':account,**route}
+                path=Path(os.getenv('PRINT_FORWARD_POLICY_FILE','/data/print-forward-policy.json'))
+                if path.exists():
+                    try:
+                        cutoff=json.loads(path.read_text(encoding='utf-8'))['send_after']
+                        if not isinstance(cutoff,(int,float)) or cutoff<=0:return None
+                    except (ValueError,KeyError,OSError):return None
+                    route['enabled_after']=max(route['enabled_after'],cutoff)
+                return route
         return None
 
     def poll(self):
@@ -124,7 +145,8 @@ class PrintApprovals:
             if not capture_allowed(policy,cfg.get('channel'),m['thread_id'],m['display_name']):continue
             if key(m['sender']) in {key(n) for n in policy.get(cfg.get('channel','')+'_internal_members',[])}:continue
             with self.engine.store.db() as db:
-                history=[json.loads(r[0]) for r in db.execute('SELECT payload FROM captures WHERE account=? AND thread_id=? AND json_extract(payload,\'$.timestamp\')>=?',(m['account'],m['thread_id'],m['timestamp']-1800))]
+                history=[json.loads(r[0]) for r in db.execute('SELECT payload FROM captures WHERE account=? AND thread_id=? AND json_extract(payload,\'$.timestamp\')>=?',(m['account'],m['thread_id'],m['timestamp']-86400))]
+            history=staff_context(history,policy,cfg.get('channel',''))
             # Wait for all messages in this group to settle; a subsequent correction needs review.
             if any(x['timestamp']>time.time()-120 for x in history):continue
             identity=hashlib.sha256(json.dumps([m['account'],m['thread_id'],m['message_id']]).encode()).hexdigest()
@@ -203,6 +225,11 @@ class PrintApprovals:
             row=db.execute("SELECT * FROM print_approvals p WHERE state='ready' AND NOT EXISTS(SELECT 1 FROM print_deliveries d WHERE d.approval_id=p.id AND d.account=?) ORDER BY created LIMIT 1",(target['account'],)).fetchone()
             if not row:return None
             payload=json.loads(row['payload'])
+            confirmation=db.execute("SELECT payload FROM captures WHERE account=? AND thread_id=? AND message_id=? ORDER BY revision DESC LIMIT 1",(row['account'],row['thread_id'],row['confirmation_id'])).fetchone()
+            if not confirmation or json.loads(confirmation[0]).get('timestamp',0)<route['enabled_after']:
+                payload['reason']='Không gửi: trước mốc tiếp nhận duyệt in đã cấu hình'
+                db.execute("UPDATE print_approvals SET state='excluded_before_cutoff',payload=? WHERE id=?",(json.dumps(payload,ensure_ascii=False),row['id']))
+                return None
             if payload['destination']['thread_id']!=route['thread_id']:raise ValueError('Destination changed')
             from hub.evidence_document import select_sources
             try:select_sources(db,row['account'],row['thread_id'],payload['messages'])
@@ -222,6 +249,9 @@ class PrintApprovals:
             if payload.get('kind')=='reprint':
                 selected=select_sources(db,row['account'],row['thread_id'],payload['messages'])
                 newer=db.execute("SELECT 1 FROM captures WHERE account=? AND thread_id=? AND json_extract(payload,'$.timestamp')>? AND json_extract(payload,'$.origin')='customer' LIMIT 1",(row['account'],row['thread_id'],max(x['timestamp'] for x in selected))).fetchone()
+            if newer and payload.get('kind') not in ('amendment','order_addition'):
+                later=[json.loads(x[0]) for x in db.execute("SELECT payload FROM captures WHERE account=? AND thread_id=? AND json_extract(payload,'$.timestamp')>?",(row['account'],row['thread_id'],m['timestamp']))]
+                newer=any(x.get('origin')=='customer' for x in staff_context(later,policy,cfg['channel']))
             if newer and payload.get('kind') not in ('amendment','order_addition'):
                 db.execute("UPDATE print_approvals SET state='review' WHERE id=?",(row['id'],));return None
             delivery_id=hashlib.sha256((row['id']+':'+target['account']).encode()).hexdigest()

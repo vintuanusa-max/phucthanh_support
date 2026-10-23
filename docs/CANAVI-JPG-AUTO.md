@@ -1,41 +1,32 @@
-# CANAVI: tự xuất JPG CMYK và AI — 19/10/2026
+# CANAVI: tự xuất JPG CMYK và AI — 22/10/2026
 
-## Luồng đang bật
-- [x] Hồ sơ mới CANAVI / CANAVI HCM2 → đọc PDF/AI, đối chiếu phiếu lệnh và maket.
-- [x] Gemini chọn object IDs và đề xuất artboard/cữ có dẫn nguồn; không dùng thông số mẫu cũ cho đơn khác.
-- [x] Kiểm tra khổ, trục ngang/cao, số mặt, đối tượng, cữ, loại in. Thiếu hoặc mâu thuẫn → Open + ghi chú nội bộ Chatwoot.
-- [x] Worker Windows mở bản sao bằng Illustrator; sao chép đối tượng gốc, lưu AI thật có maket tham chiếu và đủ artboard in. Nền cùng màu liên kết process swatch để sửa lại.
-- [x] Xuất JPG CMYK 300 dpi từ PDF-compatible AI, không chuyển vòng qua RGB; giữ ICC CMYK nguồn. PNG xem trước riêng là RGB để xem trên Chatwoot.
-- [x] Mặt túi có 4 dấu L nhánh1cm; vải mét không định vị.
-- [x] Lưu AI/JPG/preview/plan/report trên NAS, kiểm tra hash; Gemini kiểm tra lại bố cục output với nguồn trước khi ghi chú chờ duyệt.
-- [x] Queue bền vững + marker đã bắt đầu + receipt đã xác minh. Nếu gián đoạn xuất, chuyển kiểm tra, không tự xuất lặp. Ghi chú dùng event ID cố định.
-- [x] Dùng worker ArtworkInspector tự khởi động Windows sẵn có.
-- [ ] Chủ xưởng duyệt file từng đơn trước khi đưa in. Không có thao tác RIP hoặc gửi khách trong module này.
+## Đang áp dụng
+- [x] Đọc phiếu lệnh, maket và AI/PDF; gom đủ maket của các hồ sơ cùng một file/đợt yêu cầu.
+- [x] Khi có AI và PDF cùng tên trong CANAVI, ưu tiên bản AI để giữ cấu trúc gốc, tránh xuất đôi. Vẫn đối chiếu preview PDF-compatible của AI với phiếu và maket.
+- [x] Đọc PatternColor native trên bản sao AI: giữ hash, artboard, vị trí, tên pattern. Không sửa file nguồn.
+- [x] Nhánh tự động hoa văn full túi: hỗ trợ1–2hoa văn, mỗi hoa văn tấm liền2mặt. Mặt sau xoay180°, không lật gương. Chọn vùng bao ngoài cùng pattern thay vì khung thành phẩm bên trong.
+- [x] Khổ JPG sau co: ngang trừ2cm; cao>=70cm trừ5cm, cao<70cm trừ2.5cm. Không áp vào PET.
+- [x] Tấm túi4góc L nhánh1cm. Vải mét để khách cắt quai:160×20cm, không co và không định vị. Chỉ tạo vải mét khi nguồn yêu cầu in quai/vải mét; túi có quai không đủ để tự thêm.
+- [x] Giữ pattern/CMYK/ICC gốc, mở rộng vùng lặp, không kéo méo; AI giữ artboard tham khảo và tất cả artboard xuất.
+- [x] Cùng file/hash/nhóm/đợt của các hồ sơ pattern chỉ xếp một job; marker của worker ngăn tự chạy lại khi kết quả không rõ.
+- [x] Lưu CANAVI hoặc CANAVI HCM2/DESIGNER/{Tên mẫu}/REVIEW-...; preview chỉ ghi chú nội bộ Chatwoot.
+- [x] Giữ luồng lên đơn ERP độc lập; module này không tạo/sửa đơn, không gửi khách hoặc RIP.
 
-## Quy tắc khổ
-Chỉ JPG chuyển nhiệt: khổ trước co trừ ngang2cm; cao<70 trừ2,5cm; cao>=70 trừ5cm. Khổ đã xác nhận sau co không trừ tiếp. PNG/TIFF PET không áp độ co này.
-Cữ đo từ mép khổ sau co; không tự áp cữ9cm hoặc khổ của mẫu khác. Hai miếng riêng không xoay; vải liền cần nguồn xác nhận mới xoay180.
-Vải mét ngang160cm; cao20cm chỉ khi được xác nhận cho mẫu màu trơn đó. Hoa văn cần xác minh bước nối, hiện chuyển duyệt.
+## Phải chuyển review
+Thiếu phiếu/maket/file, sai phiên bản, trục vải không rõ, không chắc tấm liền, logo rời/cữ riêng, pattern khác giữa hai mặt, mã quai khác, khổ vải mét khách ghi khác mặc định, clipping phức tạp hoặc không có PatternColor native phù hợp. PDF có hoa văn đã bung thành quá nhiều nét vẫn cần review; không tuyên bố mọi PDF đều tự xuất được. Luồng JPG thông thường trước đây vẫn giữ riêng.
 
-## Phạm vi hỗ trợ và giới hạn
-Tự xuất khi file PDF-compatible AI/PDF một trang, một profile CMYK, ảnh CMYK hoặc vector path process CMYK có thể ánh xạ duy nhất sang đối tượng Illustrator. Giữ clipping chữ nhật bao trọn artwork; clipping phức tạp/cắt nội dung, blend/transparency, chữ sống, RGB/spot khác, nhiều trang/artboard nguồn, kích thước không chắc → ghi chú kiểm tra.
-AI giữ giá trị CMYK nguồn. JPG là raster8bit/nén JPEG nên có lượng tử hóa khoảng1/255 ở màu phẳng và anti-alias tại biên; không coi giá trị pixel JPG là số phần trăm CMYK native. Profile thiếu hoặc nhiều profile không tự đoán.
-Bản đầu chỉ nhận hồ sơ tạo sau mốc bật, không phát lại hàng loạt hồ sơ cũ. Đơn không đủ file sẽ nằm ở ghi chú thiếu nguồn của hồ sơ thiết kế.
-
-## Vị trí
-- Mã hub: integrations/agent-hub/hub/jpg_exports.py, jpg_plan.py, artwork_checks.py, app.py trong phucthanh_support.
-- Mã worker: U:\DESIGNER\proposal\canavi_jpg\jpg_worker.py.
-- Runtime: C:\Users\Admin\AppData\Local\PhucThanh\ArtworkInspector.
-- NAS (từ 20/10/2026): {CANAVI hoặc CANAVI HCM2}\DESIGNER\{ma_mau}\REVIEW-{YYYYMMDD}-{job_id_12}. Kho DESIGN_BRIEFS dành cho hồ sơ phân tích; bản xuất mới nằm trong DESIGNER theo mã mẫu. Bản đã xuất trước thay đổi giữ nguyên đường dẫn và lịch sử, không tự di chuyển hay xuất lại.
-- API nội bộ có xác thực: GET /adapters/{account}/jpg-exports; POST /adapters/{account}/jpg-exports/{id}.
-- SQLite jpg_exports: planning → queued → exporting → publishing → done; review/uncertain cần đối chiếu.
+Xác nhận THOCAM42×92 là tấm liền chỉ được dùng làm quy tắc có ngữ cảnh tương đương; không suy mọi yêu cầu in2mặt thành tấm liền.
 
 ## Kiểm chứng
-15 kiểm tra quy tắc/queue đạt; kiểm thử native MELANO đạt: AI4artboard (1tham chiếu+3in), front/back41x36,5cm; vải mét160x20cm, JPGCMYK300dpi và ICC nguồn. Đây là kiểm chứng kỹ thuật và preview, chưa phải kiểm màu máy in vật lý.
+- 10 kiểm thử quy tắc đạt: đủ nguồn, khổ sau co, loại trừ sai pattern, không tự thêm mét, giữ no-mirror.
+- Kiểm thử hàng đợi SQLite tạm:4panel, một job cho2hồ sơ cùng nguồn, không ERP/public.
+- Đọc native THOCAM:2artboard,8vùng pattern; chuẩn hóa đúng4vùng40×42cm.
+- Chạy xuất bằng module tổng quát:4JPG khớp SHA256 với4file THOCAM đã làm trước. Bản thử chỉ lưu cục bộ, không gửi thêm preview.
+- Đã triển khai hub image `phucthanh-chatwoot-hub:canavi-native-auto-20261022` và Windows ArtworkInspector; worker đã nạp lại.
 
-### Nghiệm thu trọn luồng
-- Job thử da4beb1f757bc71246caae4a3c77843e5bcbb3bdfc65c2a4fc4c255565d80bbd: Gemini tự chọn đúng image IDs p1-o1/p1-o2, nền p1-o167; worker xuất3JPG+AI4artboard, lưu NAS, kiểm chứng độc lập pass=true.
-- Chatwoot CANAVI hội thoại10: ghi chú3041 private=true kèm3preview. Tên mẫu có TEST_AUTO, không phải đơn sản xuất mới.
-- Lần thẩm định đầu thiếu quy tắc co ở prompt đã giữ review; sau bổ sung quy tắc chỉ kiểm chứng lại receipt, không xuất lặp. Ghi chú3040 giữ làm lịch sử;3041 là kết quả mới.
-- Căn giữa được tính bằng code theo khổ SAU CO; không để model tự lấy khổ thô để tính x.
-- Các crop đối tượng có ID được đưa vào bước chọn artwork. Hình clipping phức tạp hoặc không ánh xạ duy nhất vẫn chuyển duyệt.
+## Mã và vận hành
+Hub: integrations/agent-hub/hub/{jpg_patterns.py,jpg_exports.py,artwork_checks.py} trong phucthanh_support.
+Worker nguồn: U:/DESIGNER/agent/windows_artwork/{native_patterns.py,pattern_export.py,jpg_worker.py,worker.py}.
+Worker chạy: C:/Users/Admin/AppData/Local/PhucThanh/ArtworkInspector.
+Sao lưu: hub backups/canavi-native-auto-20261022; worker backup-canavi-auto-20261022.
+Lỗi COM/hộp thoại: báo review; không tự Alt+F4/Enter mù vì có thể đóng tài liệu chưa lưu.
