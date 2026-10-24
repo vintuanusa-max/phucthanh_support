@@ -66,3 +66,81 @@ Thông báo lỗi cần xử lý được gom theo hồ sơ mẫu hiện hành; 
 - [ ] Theo dõi một đơn mới thực tế đi hết luồng tự động sau bản sửa; không tự chạy lại 151 hồ sơ để thử.
 
 Phạm vi xuất từng phần ở bản này là PNG/TIFF native AI/PDF. Không suy diễn rằng quy trình JPG đã được sửa theo cùng cơ chế. Các quy tắc JPG CMYK hiện có vẫn giữ nguyên.
+## Ưu tiên group đầy đủ — thử lại OC (24/10/2026)
+- Vùng AI là gợi ý, không phải biên cắt bắt buộc. Ngoài đối tượng nằm trọn vùng, xét GroupItem/RasterItem/PlacedItem giao vùng ít nhất 20% diện tích đối tượng, không quá 4 lần diện tích vùng và 35% artboard. Giữ group cha thay các nét con cùng cây; vẫn tối đa 12 ứng viên.
+- Hình ứng viên phải đối chiếu với maket và kiểm chứng PNG. Không tự xuất chỉ vì giao vùng, không chọn group bao cả sản phẩm/đường đo.
+- [x] Kiểm thử vùng OC sai ban đầu vẫn chọn được group đầy đủ 0.8; loại group toàn artboard.
+- [x] Worker lưu AI editable riêng tự động cùng lượt PNG, giữ vector và khoảng cách chi tiết, không sửa file nguồn. AI được lưu ở thư mục phiên bản DESIGNER, chống ghi đè.
+- [x] OC chạy lại tự động: scan 30e8f056 → chọn group 0.8 → PNG/TIFF e8d1d7b3; không region_correction_audit, không can thiệp vùng/ID. PNG 2362 × 1163 px (~20 × 9,847 cm), alpha và spot_1 đạt. AI editable tự lưu 20 × 9,834 cm, 40 path vector, không raster. Preview Chatwoot 5663, hội thoại 10. File nguồn giữ nguyên hash.
+
+## 2026-10-24 — Gemini Pro chọn artwork có ảnh
+- [x] Khoanh vùng artboard, chọn group và đối chiếu lựa chọn dùng `gemini-2.5-pro`.
+- [x] Gửi PNG toàn artboard, ảnh nguồn maket, preview group trên nền tối và bounds Illustrator; không chỉ gửi cây JSON.
+- [x] Lọc tại máy tối đa 12 cụm, ưu tiên group đầy đủ; không gửi hàng trăm cụm.
+- [x] Lưu model và số ảnh theo lượt; giữ kết quả cũ, không tự gọi lại lượt chưa rõ kết quả.
+- [x] Kiểm thử routing, chống gọi trùng, chọn group OC/TP; build import đạt.
+- [ ] Đánh giá chất lượng thực tế Pro trên hồ sơ mới (không khẳng định chính xác tuyệt đối).
+- Giữ preview nội bộ; không RIP/gửi khách. Hồ sơ đã hoàn tất/dọn không tự chạy lại.
+
+### TP Pro end-to-end — 2026-10-24
+- [x] Owner-requested fresh replay c0a8b2ce: Pro region (1 image), Pro selection (4 images), group 0.9; no manual state/group corrections.
+- [x] Export d2cf7d00: PNG/TIFF, alpha preserved, spot_1 nonempty; internal Chatwoot preview 5671, conversation 10.
+- [x] Editable AI retains original mockup artboard and adds vector artwork artboard 20.88 x 11.855 cm. Original NAS source unchanged.
+- PNG raster tight bounds: 20.879 x 11.845 cm at 300 dpi; preserve relative layout. No RIP/customer send/ERP write.
+
+### Pro stability batch — 2026-10-24
+Three fresh automatic replays, source contexts reused; no manual group/state corrections.
+- OC: PNG/TIFF and original-plus-artboard AI completed; internal preview 5684; group 0.8.
+- JOSEON PDF: PNG/TIFF and original-plus-artboard AI completed; internal preview 5688. Tight PNG 24.003 x 21.387 cm; alpha and spot_1 passed.
+- GV2VB-100: FAILED selection. Selected 0.2.73 is dimension line 15 cm (confirmed candidate preview and rendered output). Post-export verifier blocked TIFF. Do not approve this output. Raw run retained for investigation.
+Result: 2/3 completed, not evidence of full stability. No ERP writes, RIP or customer sends. Must investigate localization/selection rejecting measurement-only groups before claiming reliable automation.
+
+### Deferred investigation: GV2VB-100.10
+Owner requests marking only, no fix or rerun yet. Maket includes multiple product views (owner suspects this contributes to wrong selection). Confirmed symptom: selected dimension group 0.2.73, output 15 cm line; verifier blocked TIFF. Root cause not yet established. Continue other samples unchanged, consolidate fixes later.
+
+### Pro evaluation batch 2 — unchanged pipeline
+Owner requested collecting failures before a combined fix. No code changes or manual group corrections.
+- SERE d085eb10: review; Pro region maps to zero native groups. No export. Investigate coordinate/group association later.
+- DINH a079302b: automatic PNG/TIFF + AI generated, preview 5698, but HUMAN VISUAL CHECK FAILED: PNG clips right/bottom artwork; automatic verifier falsely passed. Not approved for print. Internal correction warning posted. Original-plus-added-artboard AI has two pages.
+- Cumulative six distinct Pro samples: TP/OC/JOSEON completed; 100 wrong dimension group blocked; SERE zero-group region; DINH clipped output falsely passed. This is a small diagnostic sample, not a reliability estimate.
+- Deferred fixes: multi-view localization; dimension-group rejection; bounding/export clipping; verifier false acceptance. Preserve raw evidence, no RIP/customer sends or ERP changes.
+
+### 2026-10-24 — PET native group size (owner instruction)
+- Native AI/PDF PET selection: Gemini chooses artwork content only; Illustrator bounds determine physical size. Do not infer width/height from bag offsets, fabric size or A4. No native automatic hat resizing in this path; manual sizing remains separate.
+- Removed dimension reconciliation from the native selection/review prompt and checks. Source group bounds override model size values; wrong artwork, missing impactful fonts, background wrappers and duplicate selection remain guarded.
+- PNG alpha trim preserves existing pixels at 300 DPI; it must not enlarge remaining artwork back to the old group width. Transparent outer padding can disappear, but artwork scale and internal distances stay unchanged.
+- PNG aspect validation compares height against requested native width rather than rounded raster width, avoiding magnified rounding error on narrow tall lettering (SERE).
+- Updated native_auto.py, pet_exports.py, native_selection.py; backups suffix before-pet-native-size-20261024. Runtime image pet-source-size-20261024.
+- Regression checks passed: native bounds override model dimensions/margins; alpha crop does not resize; white artwork retained; wrong-artwork gate still blocks.
+- Fresh automatic runs queued for GV2VB-100.10 and SERE. No old output overwrite, ERP mutation, RIP or customer message.
+- Completed source-size trials: GV2VB-100 group 0.1, editable board 5.8×5.0cm; PNG/TIFF 682×592 at 300 DPI, preview 5734. SERE group 0.1.24.0, editable board 1.5×11.5cm; PNG/TIFF 178×1358 at 300 DPI, preview 5735. Both TIFF reports confirm spot_1 nonempty and alpha preserved. Source SHA256 unchanged; editable AI has original page plus one new page. No manual selection/state intervention in these runs. Small raster extent differences reflect Illustrator rasterization/alpha crop; no resampling after crop. Both outputs await owner approval; this two-sample check is not a universal accuracy guarantee.
+
+### 2026-10-24 — five older PET source-size automatic trials
+- [x] Default native PET rule active: select correct artwork group, preserve native scale and internal spacing; no bag-offset/fabric/A4 inference. Transparent trim only, no resampling. PNG/TIFF alpha and spot_1; original-plus-new-artboard editable AI.
+- [x] Explicit historical replay marker owner-pet-source-size-old5-20261024. JOSEON, OC, TP, SEE, CHERRIES: five source files, six exports (SEE body and strap). No manual group/state changes during processing.
+- [x] All six TIFFs completed and archive hashes match manifests; spot_1 nonempty and alpha_preserved true. All six editable AIs contain original artboard plus export artboard. Original downloaded source SHA256 matches source asset.
+- [x] Visually inspected all six artwork PNGs; artwork only, no bag/dimension frame. Outputs await owner approval; five-file result is not a universal accuracy guarantee.
+- JOSEON: 657be558, Chatwoot 5737 (conversation 10); PNG tight extent 23.487 x 20.930 cm.
+- OC: f39b6065, Chatwoot 5738 (conversation 10); PNG 20.007 x 9.847 cm.
+- TP: 187960cd, Chatwoot 5739 (conversation 10); PNG 20.879 x 11.853 cm.
+- SEE: 9a96c303 / 5a6d06e3, Chatwoot 5740 / 5741 (conversation 10); body 11.455 x 11.430 cm, strap 2.117 x 11.362 cm.
+- CHERRIES: 970708ee, Chatwoot 5742 (conversation 16); PNG tight extent 12.751 x 21.006 cm. Native group has transparent padding; crop preserves source pixel scale.
+- SEE/CHERRIES used separate trial briefs; original archived briefs/jobs remain archived. No ERP writes, RIP, customer sends, old-output overwrite or bulk replay.
+
+### 2026-10-24 — SEE logo fill correction (supersedes prior visual acceptance)
+- Prior SEE body export 9a96c303 / preview 5740 is incomplete: selected child 0.25.0 omitted colored circular fills. Do not use that body output. Strap 5a6d06e3 / preview 5741 remains the previous valid output.
+- [x] Large Path/CompoundPath fill no longer excludes the complete parent group. Ambiguous wrappers offer parent and immediate child alternatives for visual selection; dimension filtering and 12-candidate ceiling remain.
+- [x] Selection and verification explicitly preserve colored logo fills/rings. Transparency means outside the artwork, not removing fills inside a logo.
+- [x] Artboard localization preview includes a coordinate grid (analysis only). Reconciliation completeness applies to selected artwork, not missing other positions.
+- First retry localized incorrectly and was blocked; second chose correct body but blocked on missing strap. No file was exported by those attempts; no manual group override.
+- [x] Final automatic replay d01e917d selected complete group 0.25. Export 14ff42a3: original group 14.84794 x 15.04904 cm; PNG 1754 x 1779 at 300 DPI. TIFF hash matched, alpha preserved, spot_1 nonempty. Editable AI has original plus new artboard, source hash unchanged.
+- [x] Human visual inspection confirms turquoise fill and pink rings, cream lettering retained. Internal Chatwoot preview 5746 (conversation 10); requires owner approval. This replay exported body only; retain previous strap, do not interpret model's missing-strap report as absence from source.
+- Runtime image pet-logo-complete-20261024; native_auto.py backed up before-logo-fill-20261024 and persisted to both Hub source and support mirror. No ERP changes, RIP or customer send.
+
+### Quy trình PET được chủ xưởng duyệt — 2026-10-24
+- [x] Áp dụng mặc định cho đơn PET mới: đọc maket và AI/PDF, tự chọn group hoàn chỉnh; giữ nền màu/vòng viền thuộc logo, chữ và chi tiết trắng.
+- [x] Xuất nguyên kích thước native Illustrator; không suy từ cữ túi, không trừ co vải, không lật gương. Cắt sát alpha ngoài artwork mà không resize hoặc đổi khoảng cách chi tiết.
+- [x] PNG nền ngoài artwork trong suốt; TIFF có mực trắng theo workflow hiện hành. AI editable giữ bản gốc và thêm artboard xuất để đối chiếu.
+- [x] Phần đủ nguồn xuất trước; phần thiếu ghi rõ riêng. Preview chỉ ghi chú nội bộ Chatwoot để duyệt; chưa RIP/gửi khách.
+- [x] Chống xuất trùng theo job/phiên bản, không ghi đè đầu ra cũ và không tự chạy lại hồ sơ đã dọn.
+- Chủ xưởng đã xem và chấp nhận bản SEE sửa đủ nền màu (preview 5746). Kết quả thử không đồng nghĩa mọi nguồn mới luôn chọn đúng; giữ kiểm chứng và luồng duyệt nội bộ.

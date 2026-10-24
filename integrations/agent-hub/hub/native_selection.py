@@ -4,10 +4,12 @@ from PIL import Image
 from hub.store import event_key
 LOCK=threading.RLock()
 
-def trim_artwork(im,width_cm):
+def trim_artwork(im,width_cm,preserve_scale=False):
  box=im.getchannel('A').getbbox()
  if not box:raise ValueError('Artwork rỗng')
  crop=im.crop(box)
+ if preserve_scale:
+  return crop,{'source_pixels':list(im.size),'alpha_bbox':list(box),'output_pixels':list(crop.size),'width_cm':crop.width/300*2.54,'height_cm':crop.height/300*2.54,'preserve_scale':True}
  pixels=max(1,round(width_cm/2.54*300));height=max(1,round(pixels*crop.height/crop.width))
  if max(pixels,height)>20000:raise ValueError('Artwork sau cắt vượt giới hạn raster')
  if crop.size!=(pixels,height):crop=crop.resize((pixels,height),Image.Resampling.LANCZOS)
@@ -49,6 +51,7 @@ def submit(e,bid,data):
    chosen=[c for c in sp['scan']['candidates'] if c['id'] in ids]
    if not ids or len(ids)!=len(chosen):raise ValueError('Chọn cụm hợp lệ')
    if any(a!=b and b.startswith(a+'.') for a in ids for b in ids):raise ValueError('Không chọn đồng thời cụm cha và cụm con')
+   if any(c.get('name')=='Manual Dimension' for c in chosen):raise ValueError('Không chọn đối tượng đường kích thước (Manual Dimension)')
    if any(c.get('live_text_count',1)>0 for c in chosen) and sp['scan'].get('missing_fonts'):raise ValueError('Cụm có chữ sống và font thiếu: cần khôi phục font hoặc outline từ file gốc trước khi xuất')
    width=float(data.get('width_cm',0));note=str(data.get('note','')).strip()
    if not math.isfinite(width) or not .1<=width<=160 or not 5<=len(note)<=3000:raise ValueError('Cần chiều ngang 0,1–160cm và ghi chú đối chiếu')
@@ -108,8 +111,8 @@ def result(e,account,identity,data):
     width=im.width/300*2.54;height=im.height/300*2.54
     if abs(width-p['width_cm'])>.04:raise ValueError('PNG sai kích thước đã chọn')
     c=p['candidates'];left=min(x['bounds'][0] for x in c);right=max(x['bounds'][2] for x in c);top=max(x['bounds'][1] for x in c);bottom=min(x['bounds'][3] for x in c)
-    if abs(height-width*(top-bottom)/(right-left))>.04:raise ValueError('PNG sai tỷ lệ')
-    im,geometry=trim_artwork(im,p['width_cm'])
+    if abs(height-p['width_cm']*(top-bottom)/(right-left))>.04:raise ValueError('PNG sai tỷ lệ')
+    im,geometry=trim_artwork(im,p['width_cm'],preserve_scale=p.get('auto_face',{}).get('basis')=='source_layout')
     p['export_geometry']=geometry
     if p.get('auto_face'):
      p['auto_face']=dict(p['auto_face'],width_cm=geometry['width_cm'],height_cm=geometry['height_cm'])

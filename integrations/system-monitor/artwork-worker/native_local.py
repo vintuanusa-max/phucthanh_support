@@ -32,7 +32,17 @@ for(var bi=0;bi<d.artboards.length;bi++)rows.push('BOARD\t'+bi+'\t'+encodeURICom
 EXPORT=COMMON+r'''(function(){var d=null,old=app.userInteractionLevel,prev=app.documents.length?app.activeDocument:null;
 try{app.userInteractionLevel=UserInteractionLevel.DONTDISPLAYALERTS;d=app.open(new File(__SOURCE__));if(d.placedItems.length)throw Error('Linked artwork');var specs=__ITEMS__,items=[];
 for(var i=0;i<specs.length;i++){var p=at(d,specs[i].id),b=bounds(p);if(p.typename!==specs[i].kind)throw Error('Candidate changed');for(var j=0;j<4;j++)if(Math.abs(b[j]-specs[i].bounds[j])>.05)throw Error('Candidate bounds changed');items.push(p);}
-return render(items,__FOLDER__,__NAME__,__WIDTH__,300,true).join(',');
+var dims=render(items,__FOLDER__,__NAME__,__WIDTH__,300,true);
+var layer=d.layers.add();layer.name='PRINT_ARTWORK_EDITABLE';var g=layer.groupItems.add();
+for(var i=0;i<items.length;i++)items[i].duplicate(g,ElementPlacement.PLACEATEND);
+var b=g.visibleBounds,ratio=__WIDTH__/(b[2]-b[0]);g.resize(ratio*100,ratio*100,true,true,true,true,ratio*100,Transformation.TOPLEFT);
+var edge=-1e9,top=-1e9;for(var ai=0;ai<d.artboards.length;ai++){var ab=d.artboards[ai].artboardRect;edge=Math.max(edge,ab[2]);top=Math.max(top,ab[1]);}
+var all=d.visibleBounds;edge=Math.max(edge,all[2]);b=g.visibleBounds;
+g.translate(edge+72-b[0],top-b[1]);b=g.visibleBounds;
+var added=d.artboards.add(b);added.name='PRINT_ARTWORK_'+__NAME__;d.artboards.setActiveArtboardIndex(d.artboards.length-1);
+var opt=new IllustratorSaveOptions();opt.pdfCompatible=true;
+d.saveAs(new File(__FOLDER__+'/'+__NAME__+'_editable.ai'),opt);
+return dims.join(',');
 }finally{try{if(d)d.close(SaveOptions.DONOTSAVECHANGES);}catch(ignore){}app.userInteractionLevel=old;if(prev){try{prev.activate();}catch(e){}}}})()'''
 def quoted(path):return json.dumps(str(path).replace('\\','/'))
 def source_copy(raw,name,folder):
@@ -102,5 +112,7 @@ def export(raw,name,folder,candidates,ids,width_cm,output):
  png=folder/(output+'.png')
  with Image.open(png) as im:im.save(folder/'normalized.png',dpi=(300,300))
  (folder/'normalized.png').replace(png)
- result={'width_cm':dims[0],'height_cm':dims[1],'png':str(png),'ai':None,'sha256':hashlib.sha256(png.read_bytes()).hexdigest()}
+ ai=folder/(output+'_editable.ai')
+ if not ai.is_file():raise ValueError('Editable AI was not saved')
+ result={'width_cm':dims[0],'height_cm':dims[1],'png':str(png),'ai':str(ai),'sha256':hashlib.sha256(png.read_bytes()).hexdigest()}
  done.write_text(json.dumps(result));return result
