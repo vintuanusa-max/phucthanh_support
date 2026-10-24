@@ -4,7 +4,25 @@ import json
 import subprocess
 from pathlib import Path
 from urllib.parse import quote
-from PIL import Image
+from PIL import Image, ImageChops, ImageFilter, ImageOps
+
+
+SPOT_POLICY = 'white-preserve-color-contract1-v1'
+
+def spot_coverage(image):
+    """300dpi: preserve white alpha; choke color underbase by one pixel.
+
+    RGB >=250 in all channels is white (small raster rounding tolerance).
+    Erode total alpha, then restore white coverage so adjoining white/color
+    regions do not acquire an artificial unprinted seam.
+    Transparent canvas edges are padded before erosion.
+    """
+    rgba=image.convert('RGBA');r,g,b,alpha=rgba.split()
+    white=ImageChops.darker(ImageChops.darker(r,g),b).point(lambda v:255 if v>=250 else 0)
+    white=ImageChops.multiply(white,alpha)
+    padded=ImageOps.expand(alpha,border=1,fill=0)
+    contracted=padded.filter(ImageFilter.MinFilter(3)).crop((1,1,alpha.width+1,alpha.height+1))
+    return ImageChops.lighter(white,contracted)
 
 
 JSX = r'''(function(){
@@ -19,6 +37,14 @@ try {
    d=app.open(new File(x.png));var w=d.width.as('px'),h=d.height.as('px');
    if(Math.abs(d.resolution-300)>0.1)throw new Error('PNG DPI');
    app.doAction('WHITE_1','IN_PHUC_THANH_ACTIONS');
+   // Replace the action's uniform choke with the per-pixel white/color mask.
+   var maskDoc=app.open(new File(x.mask));
+   var replacement=maskDoc.channels[0].duplicate(d);
+   maskDoc.close(SaveOptions.DONOTSAVECHANGES);app.activeDocument=d;
+   for(var z=d.channels.length-1;z>=0;z--){if(d.channels[z].name==='spot_1')d.channels[z].remove();}
+   replacement.name='spot_1';replacement.kind=ChannelType.SPOTCOLOR;
+   var white=new SolidColor();white.rgb.red=255;white.rgb.green=255;white.rgb.blue=255;
+   replacement.color=white;replacement.opacity=100;
    if(d.width.as('px')!==w || d.height.as('px')!==h)throw new Error('Action changed geometry');
    var opt=new TiffSaveOptions();opt.transparency=true;opt.alphaChannels=true;opt.spotColors=true;opt.layers=false;opt.imageCompression=TIFFEncoding.TIFFLZW;
    d.saveAs(target,opt,true,Extension.LOWERCASE);d.close(SaveOptions.DONOTSAVECHANGES);d=null;
@@ -54,14 +80,38 @@ def export_photoshop(folder, files):
     configs=[]
     for info in files:
         png=folder/info['name'];tiff=png.with_suffix('.tiff')
-        configs.append({'png':str(png).replace('\\','/'),'tiff':str(tiff).replace('\\','/')})
+        mask=folder/(png.name+'.spot-mask.png')
+        with Image.open(png) as source:
+            coverage=spot_coverage(source)
+            if coverage.getbbox() is None:
+                raise ValueError('Spot rỗng sau contract1px; cần duyệt chi tiết quá nhỏ')
+            ImageOps.invert(coverage).save(mask,dpi=(300,300))
+        configs.append({'png':str(png).replace('\\','/'),'tiff':str(tiff).replace('\\','/'),'mask':str(mask).replace('\\','/')})
     script=folder/'white.jsx';script.write_text(JSX.replace('__CONFIG__',json.dumps(configs,ensure_ascii=True)),encoding='utf-8')
     # No shell interpolation of file names. PowerShell reads a fixed JSX file in cwd.
     command="$ErrorActionPreference='Stop'; $app=New-Object -ComObject Photoshop.Application; $jsx=[IO.File]::ReadAllText((Join-Path (Get-Location) 'white.jsx')); $app.DoJavaScript($jsx)"
     run=subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-Command',command],cwd=folder,capture_output=True,timeout=240)
     if run.returncode or run.stdout.decode(errors='replace').strip() != ','.join(['verified']*len(files)):
         raise ValueError('Photoshop chưa xác minh xong TIFF; không tự chạy lại action')
+    for info in files:
+        verify_spot_coverage(folder/info['name'],(folder/info['name']).with_suffix('.tiff'))
+    (folder/'spot-policy.json').write_text(json.dumps({'policy':SPOT_POLICY,'white_contract_px':0,'color_contract_px':1,'white_rgb_min':250,'pixel_verified':True}),encoding='utf-8')
     return [verify_tiff(folder/f['name'],(folder/f['name']).with_suffix('.tiff'),f) for f in files]
+
+
+def verify_spot_coverage(png,tiff):
+    import sys
+    dependencies=Path(__file__).parent/'spot-deps'
+    if dependencies.is_dir() and str(dependencies) not in sys.path:
+        sys.path.insert(0,str(dependencies))
+    import tifffile
+    import numpy as np
+    with Image.open(png) as source:
+        expected=np.asarray(spot_coverage(source))
+    with tifffile.TiffFile(tiff) as file:
+        raw=file.pages[0].asarray()
+    if raw.shape != (*expected.shape,5) or not np.array_equal(255-raw[:,:,4],expected):
+        raise ValueError('Spot không khớp quy tắc trắng0px/màu1px; cần kiểm tra')
 
 
 def sync_pet(client, cfg, local_root):
@@ -98,6 +148,8 @@ def sync_pet(client, cfg, local_root):
             png=folder/info['name'];tiff=png.with_suffix('.tiff')
             if hashlib.sha256(png.read_bytes()).hexdigest()!=info['sha256']:
                 raise ValueError('PNG đã đổi sau khi duyệt bản tách')
+            if (folder/'spot-policy.json').exists():
+                verify_spot_coverage(png,tiff)
             checked=verify_tiff(png,tiff,info)
             if checked!=report:raise ValueError('Verified artifact changed')
             for source in (png,tiff):
@@ -108,6 +160,8 @@ def sync_pet(client, cfg, local_root):
                     with dest.open('xb') as f:f.write(raw)
             r=client.put(prefix+'/'+identity+'/'+quote(tiff.name,safe=''),content=tiff.read_bytes(),timeout=120);r.raise_for_status()
         manifest={'id':identity,'plan':job['plan'],'source':job['source'],'reports':reports,'private':True,'auto_rip':False}
+        if (folder/'spot-policy.json').exists():
+            manifest['spot_policy']=json.loads((folder/'spot-policy.json').read_text(encoding='utf-8'))
         (archive/'manifest.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2),encoding='utf-8')
         r=client.post(prefix+'/'+identity,json={'reports':reports},timeout=180);r.raise_for_status()
         return 'pet_'+r.json()['state']

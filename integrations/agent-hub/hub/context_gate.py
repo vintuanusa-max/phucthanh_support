@@ -11,6 +11,19 @@ from hub.order_policy import capture_allowed, key
 
 VERSION = 'context-v1'
 
+# These fields belong to artwork preparation, not acceptance of a new order.
+# Unknown missing fields, quantity/intent ambiguities and conflicts still block.
+DESIGN_ONLY_FIELDS = frozenset({
+    'product_details', 'design_confirmation', 'artwork', 'artwork_file',
+    'source_file', 'design_file', 'print_dimensions', 'dimensions', 'size',
+    'width_cm', 'height_cm', 'print_size', 'print_positions', 'color',
+    'product_code', 'ma_san_pham', 'price', 'delivery_date', 'sample_name',
+    'ten_mau', 'design_details', 'artwork_confirmation',
+})
+
+def order_missing_fields(fields):
+    return [f for f in fields if str(f).strip().casefold() not in DESIGN_ONLY_FIELDS]
+
 
 class IntentDecision(StrictModel):
     intent: Literal['new_order', 'order_amendment', 'material_shortage', 'material_replenishment',
@@ -44,7 +57,9 @@ def classify(settings, context, images):
         'source_message_ids phải là ID thật có trong batch/history, có ít nhất một ID trong batch. '
         'evidence là trích dẫn nguyên văn ngắn từ text của tin đã dẫn; ảnh chỉ là nguồn bổ trợ. '
         'Không xem nội dung lời nhân viên là đơn đặt của khách. Tag người không đổi vai trò tác giả. '
-        'missing_fields chỉ gồm dữ liệu cần để nhận diện ý định/số lượng/mẫu. Thiếu mã sản phẩm ERP, giá hoặc ngày giao không phải lý do chặn đơn mới. Nêu conflicts khi có mâu thuẫn thực sự; trả đúng JSON theo schema.'
+        'Hai luồng độc lập: khách đặt rõ + số lượng từ chữ/ảnh thì nhận đơn ERP Lên mẫu. '
+        'Thiếu file gốc, kích thước in, màu, xác nhận thiết kế, product_details hay design_confirmation chỉ giữ luồng file; không chặn đơn. '
+        'missing_fields chỉ chặn khi chưa rõ ý định đặt, số lượng hoặc phân bổ số lượng giữa các mẫu. Thiếu mã sản phẩm ERP, giá hoặc ngày giao không phải lý do chặn đơn mới. Nêu conflicts khi có mâu thuẫn thực sự; trả đúng JSON theo schema.'
     )
     schema = IntentDecision.model_json_schema()
     with httpx.Client(timeout=60, follow_redirects=False, trust_env=False) as client:
@@ -72,7 +87,7 @@ def validate_decision(decision, context):
     if decision.existing_run_id and decision.existing_run_id not in candidates:
         raise ValueError('Unknown existing work item')
     return (decision.intent == 'new_order' and not decision.existing_run_id
-            and not decision.conflicts and not decision.missing_fields)
+            and not decision.conflicts and not order_missing_fields(decision.missing_fields))
 
 
 class ContextGate:

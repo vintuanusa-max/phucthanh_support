@@ -25,13 +25,28 @@ def sync(cfg):
     parsed=urlparse(cfg['hub_url'])
     if parsed.hostname not in ('127.0.0.1','localhost') or parsed.scheme!='http':raise ValueError('Expected local Hub')
     with httpx.Client(base_url=cfg['hub_url'],headers={'Authorization':'Bearer '+cfg['ingest_token']},timeout=65,trust_env=False,follow_redirects=False) as c:
+        from preview_worker import sync_preview
+        try:
+            preview_state=sync_preview(c,cfg)
+        except Exception as exc:
+            preview_state='preview_error:'+type(exc).__name__
+        from jpg_worker import sync_jpg
+        jpg_state=sync_jpg(c,cfg,Path(__file__).parent/'jpg-output')
+        from approval_worker import sync_approval
+        approval_state=sync_approval(c,cfg)
         from pet_worker import sync_pet
         pet_state=sync_pet(c,cfg,Path(__file__).parent/'pet-output')
         prefix='/adapters/'+cfg['account']+'/artwork-checks'
         r=c.get(prefix);r.raise_for_status();job=r.json().get('job')
-        if not job:return pet_state
+        if not job:return pet_state+';'+jpg_state+';'+preview_state
         try:
             data={'data':read_asset(cfg['archive']['root'],job['asset']),'references':{}}
+            asset=job['asset'];group=asset['relative_path'].replace('\\','/').split('/')[0]
+            if group in ('CANAVI','CANAVI HCM2') and asset['name'].lower().endswith('.ai'):
+                try:
+                    from native_patterns import inspect
+                    data['native_patterns']=inspect(base64.b64decode(data['data']),Path(__file__).parent/'native-inspection'/asset['sha256'])
+                except Exception as exc:data['native_pattern_error']='Native inspection: '+type(exc).__name__
             for ref in job.get('reference_assets',[]):
                 try:data['references'][ref['sha256']]=read_asset(cfg['archive']['root'],ref,4*1024*1024)
                 except (OSError,ValueError):pass
@@ -59,3 +74,4 @@ def main():
         time.sleep(30)
 
 if __name__=='__main__':main()
+

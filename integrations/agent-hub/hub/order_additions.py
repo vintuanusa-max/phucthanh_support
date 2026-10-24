@@ -123,17 +123,18 @@ class OrderAdditions:
         if len(snapshot['lines'])>1:return None
         return order_id,files
 
-    def new_addition(self,run,messages,request,binding,identity):
+    def new_addition(self,run,messages,request,binding,identity,previous=None):
         payload=json.loads(run['payload'])
+        note=('In thêm riêng từ đơn '+str(previous['order_ref'])+'; giữ nguyên đơn đã chuyển sản xuất.') if previous else 'Đặt thêm riêng: chưa xác định duy nhất đơn cũ. Đối chiếu mẫu trước khi in.'
         payload.update(customer_binding=binding,request_id='chatwoot-id:'+run['id'],
-            addition_fallback={'source_message_id':request['source_message_id'],'delta':str(request['delta'])},
+            addition_fallback={'source_message_id':request['source_message_id'],'delta':str(request['delta']),'previous_order_id':previous.get('order_id') if previous else None},
             orders=[{'ma_san_pham':None,'ten_mau':None,'so_luong':str(request['delta']),
-                     'ghi_chu_mau_do':'Đặt thêm riêng: chưa xác định duy nhất đơn cũ. Đối chiếu mẫu trước khi in.'}])
+                     'ghi_chu_mau_do':note}])
         with self.store.db() as d:
             d.execute('INSERT INTO order_additions VALUES(?,?,?,?,?,?,?)',
                 (identity,run['account'],run['thread_id'],request['source_message_id'],'new_order',json.dumps({'run_id':run['id']}),'{}'))
             d.execute("UPDATE intake_runs SET state='awaiting_evidence',payload=? WHERE id=?",(json.dumps(payload,ensure_ascii=False),run['id']))
-        self.intake.notify(run,f"ĐẶT THÊM: Không xác định duy nhất đơn cũ; chuẩn bị đơn Lên mẫu riêng {request['delta']} cái, mã hàng Chờ mã. Không dùng tổng số lượng cũ; mẫu cần đối chiếu theo bằng chứng.")
+        self.intake.notify(run,f"{note} Chuẩn bị đơn Lên mẫu riêng {request['delta']} cái, mã hàng Chờ mã. Không dùng tổng số lượng cũ; mẫu cần đối chiếu theo bằng chứng.")
 
     def notice(self,run,messages,identity,text):
         route=self.e.print_approvals.route()
@@ -185,6 +186,13 @@ class OrderAdditions:
                 return True
             order_id,verified_files=target
             snapshot=self.e.erp.quantity_snapshot(binding['customer_id'],order_id)
+            if not snapshot.get('status'):
+                raise ValueError('ERP chưa trả trạng thái đơn; không tự sửa')
+            if snapshot['status'] not in ('len_mau','mau_co_san','dang_chay_giay'):
+                self.new_addition(run,messages,request,binding,identity,previous=snapshot)
+                return True
+            if snapshot.get('mutation_policy') != 'quantity-states-v2':
+                raise ValueError('Cần nạp API ma trận trạng thái tăng/giảm mới; chưa tự cộng đơn cũ')
             if 'recent' not in snapshot:raise ValueError('ERP cần nạp API giới hạn 3 ngày trước khi đối chiếu đơn cũ')
             if not snapshot['recent']:
                 self.new_addition(run,messages,request,binding,identity)

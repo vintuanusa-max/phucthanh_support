@@ -6,10 +6,11 @@ from pathlib import Path
 from PIL import Image
 import pymupdf as fitz
 from hub.artwork_objects import inventory
+from hub.workflow_rules import hat_default_size
 
 
-def capped_size(width,height):
-    scale=min(1.0,6.5/height)
+def capped_size(width,height,cap=None):
+    scale=min(1.0,cap/height) if cap is not None else 1.0
     return width*scale,height*scale,scale
 
 
@@ -46,7 +47,7 @@ def validate_plan(plan, objects, refs):
             raise ValueError('Khổ PET vượt giới hạn 45 triệu pixel; cần kiểm tra')
         if not face.get('dimension_refs') or not set(face['dimension_refs']) <= set(refs):
             raise ValueError('Kích thước thiếu bằng chứng phiếu/maket')
-        if face.get('dimensions_basis') not in ('explicit_measurement', 'maket_ratio_confirmed','source_layout'):
+        if face.get('dimensions_basis') not in ('explicit_measurement', 'maket_ratio_confirmed','source_layout','owner_hat_default'):
             raise ValueError('Chưa có căn cứ kích thước')
         if not face.get('dimension_explanation'):
             raise ValueError('Thiếu giải thích kích thước')
@@ -105,6 +106,26 @@ def render_face(source, sha, face, target):
                              fill_opacity=path.get('fill_opacity') if path.get('fill_opacity') is not None else 1,
                              stroke_opacity=path.get('stroke_opacity') if path.get('stroke_opacity') is not None else 1)
                 shape.commit()
+        elif kinds == {'image'} and len(selected) > 1:
+            # Preserve PDF clipping and relative placement of a complete embedded-image cluster.
+            page_images=[x for x in inv['objects'] if x['page']==selected[0]['page'] and x['kind']=='image']
+            if {x['id'] for x in selected}!={x['id'] for x in page_images}:
+                raise ValueError('Cụm ảnh chỉ lấy một phần trang: cần kiểm tra clip riêng')
+            masks={x[0]:x[1] for x in page.get_images()}
+            if any(not x['xref'] or not masks.get(x['xref']) for x in page.get_image_info(xrefs=True)):
+                raise ValueError('Cụm ảnh có nền chưa trong suốt; cần duyệt')
+            out.close();out=fitz.open();out.insert_pdf(doc,from_page=selected[0]['page']-1,to_page=selected[0]['page']-1)
+            canvas=out[0]
+            # Remove only page text/vectors; image masks and PDF clip operators remain intact.
+            canvas.add_redact_annot(canvas.rect,fill=False,cross_out=False)
+            canvas.apply_redactions(images=0,graphics=2,text=0)
+            probe=canvas.get_pixmap(matrix=fitz.Matrix(2,2),alpha=True)
+            import io
+            rgba=Image.open(io.BytesIO(probe.tobytes('png'))).convert('RGBA')
+            crop=rgba.getchannel('A').point(lambda v:0 if v<=1 else v).getbbox()
+            if not crop:raise ValueError('Cụm ảnh không có artwork sau clipping')
+            box=fitz.Rect(*(v/2 for v in crop))
+            source_width_cm=box.width*2.54/72;source_height_cm=box.height*2.54/72
         elif kinds == {'image'} and len(selected) == 1:
             infos = page.get_image_info(xrefs=True)
             page_images = [x for x in inv['objects'] if x['page'] == selected[0]['page'] and x['kind'] == 'image']
@@ -135,11 +156,17 @@ def render_face(source, sha, face, target):
         else:
             raise ValueError('Cụm chữ sống/ảnh-vector trộn cần kiểm tra riêng để giữ đúng hình')
         if face.get('dimensions_basis')=='source_layout':face['width_cm']=source_width_cm;face['height_cm']=0
+        if face.get('manual_height_cm') is not None:
+            height=float(face['manual_height_cm'])
+            if not math.isfinite(height) or not .1<=height<=160:raise ValueError('Chiều cao thủ công không hợp lệ')
+            face['height_cm']=height;face['width_cm']=height*box.width/box.height
+            face['dimensions_basis']='explicit_measurement'
         expected_height=face['width_cm']*box.height/box.width
         if not face['height_cm']:face['height_cm']=expected_height
         elif abs(face['height_cm']/expected_height-1)>.025:raise ValueError('Kích thước làm méo artwork sau trim alpha')
         face['before_height_cap_cm']=[face['width_cm'],face['height_cm']]
-        face['width_cm'],face['height_cm'],face['height_cap_scale']=capped_size(face['width_cm'],face['height_cm'])
+        face['width_cm'],face['height_cm']=hat_default_size(face,face['width_cm'],face['height_cm'])
+        face['width_cm'],face['height_cm'],face['height_cap_scale']=capped_size(face['width_cm'],face['height_cm'],face.get('height_cap_cm'))
         if face['width_cm']*face['height_cm']*(300/2.54)**2>45_000_000:raise ValueError('Khổ PET vượt giới hạn')
         final = fitz.open()
         dest = final.new_page(width=face['width_cm'] * 72/2.54, height=face['height_cm'] * 72/2.54)

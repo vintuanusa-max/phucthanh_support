@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="vi"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Phúc Thành · Agent Hub</title>
+<main><p><a href="/workflow">Theo dõi đơn và file thiết kế</a></p>
+<h1>Phúc Thành · Agent Hub</h1>
+<p>AI xử lý hội thoại, nhân viên tiếp quản khi cần. Quyền tạo đơn và phạm vi AI được thể hiện trong trạng thái cấu hình.</p>
+<label>Token quản trị <input id="token" type="password" autocomplete="off"></label>
+<button id="load">Kiểm tra trạng thái</button>
+<p><a href="http://localhost:3000" target="_blank" rel="noreferrer">Mở Chatwoot</a> · <a href="/docs">Tài liệu API</a></p>
+<section><h2>Trạng thái</h2><pre id="status">Chưa kết nối</pre></section>
+<section><h2>Nhân viên tiếp quản / giao lại AI</h2>
+<label>ID hội thoại <input id="conversation" type="number" min="1"></label>
+<button id="human">Nhân viên tiếp quản</button><button id="ai">Giao lại AI</button></section>
+<section><h2>Đề xuất đơn</h2><button id="drafts">Tải đề xuất</button><pre id="draftlist"></pre>
+<label>Mã đề xuất <input id="draft"></label><button id="approve">Duyệt tạo đơn ERP</button>
+<p>Chỉ hoạt động khi bật ghi ERP và đã liên kết khách hàng.</p></section>
+<section><h2>Kết quả dự kiến / nhật ký</h2><button id="effects">Xem kết quả</button><button id="jobs">Xem tác vụ</button><pre id="results"></pre></section>
+<section><h2>Nhóm Zalo → khách ERP</h2>
+<p>Liên kết theo ID nhóm và ID khách. Đổi tên nhóm không đổi khách hàng. API ERP phải hỗ trợ ID khách trước khi tự tạo đơn.</p>
+<button id="mappingload">Tải danh sách nhóm</button>
+<label>Nhóm <select id="mappinggroup"></select></label>
+<label>ID khách ERP <input id="customerid" placeholder="UUID khách hàng"></label>
+<label>Tên khách để hiển thị <input id="customername"></label>
+<button id="mappingsave">Lưu ánh xạ</button><p id="mappingresult"></p></section>
+</main>
+<script>
+async function call(path, body) {
+ const response = await fetch(path, {method: body ? 'POST' : 'GET', headers: {
+  'Authorization': 'Bearer ' + document.getElementById('token').value,
+  'Content-Type': 'application/json'
+ }, ...(body ? {body: JSON.stringify(body)} : {})});
+ const data = await response.json();
+ if (!response.ok) throw new Error(JSON.stringify(data));
+ return data;
+}
+function bind(id, action) {
+ document.getElementById(id).onclick = async () => {
+  try {await action();} catch (e) {document.getElementById('results').textContent = e.message;}
+ };
+}
+bind('load', async () => document.getElementById('status').textContent = JSON.stringify(await call('/admin/status'), null, 2));
+for (const owner of ['ai', 'human']) bind(owner, async () => {
+ const id = document.getElementById('conversation').value;
+ document.getElementById('results').textContent = JSON.stringify(await call('/admin/conversations/' + encodeURIComponent(id) + '/owner', {owner}));
+});
+bind('drafts', async () => document.getElementById('draftlist').textContent = JSON.stringify(await call('/admin/drafts'), null, 2));
+bind('approve', async () => {
+ if (!confirm('Tạo đơn thật trong ERP từ đề xuất này?')) return;
+ document.getElementById('results').textContent = JSON.stringify(await call('/admin/drafts/' + encodeURIComponent(document.getElementById('draft').value) + '/approve', {}), null, 2);
+});
+for (const table of ['effects', 'jobs']) bind(table, async () => document.getElementById('results').textContent = JSON.stringify(await call('/admin/' + table), null, 2));
+let mappings = [];
+function showMapping() {
+ const row = mappings[document.getElementById('mappinggroup').value];
+ document.getElementById('customerid').value = row?.customer_id || '';
+ document.getElementById('customername').value = row?.customer_name || '';
+}
+async function loadMappings() {
+ mappings = (await call('/admin/customer-mappings/list')).items;
+ const select = document.getElementById('mappinggroup'); select.replaceChildren();
+ mappings.forEach((row, index) => {
+  const option = document.createElement('option'); option.value = index;
+  option.textContent = row.display_name + ' → ' + (row.customer_name || 'Chưa ánh xạ'); select.append(option);
+ }); showMapping();
+}
+document.getElementById('mappinggroup').onchange = showMapping;
+bind('mappingload', loadMappings);
+bind('mappingsave', async () => {
+ const row = mappings[document.getElementById('mappinggroup').value];
+ if (!row) throw new Error('Hãy tải và chọn nhóm trước');
+ const result = await call('/admin/customer-mappings/' + encodeURIComponent(row.account) + '/' + encodeURIComponent(row.thread_id), {
+  customer_id: document.getElementById('customerid').value.trim(),
+  customer_name: document.getElementById('customername').value.trim(), expected_version: row.version
+ });
+ document.getElementById('mappingresult').textContent = 'Đã lưu ánh xạ: ' + row.display_name + ' → ' + result.customer_name;
+ await loadMappings();
+});
+</script></html>

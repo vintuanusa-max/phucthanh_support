@@ -160,6 +160,10 @@ class Engine:
             return self.store.enqueue(event_key("incoming", payload["id"]), "incoming", payload)
         return False
 
+    def process_raster_pet(self, key, payload):
+        from hub.raster_pet import process
+        process(self, payload['id'])
+
     def process_artwork_check(self, key, payload):
         self.artwork_checks.process(payload['id'])
 
@@ -549,3 +553,4 @@ class Engine:
             payload["text"],
             apply_capture=quality or cfg.get("human_delivery_enabled") is True,
         )
+

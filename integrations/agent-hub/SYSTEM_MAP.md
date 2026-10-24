@@ -463,3 +463,11 @@ See KPI-VA-LOI-SAN-XUAT.md. Enabled only new messages in verified Zalo/WhatsApp 
 - ERP đã chuyển đơn sang dang_chay_giay với 4 mét và file NEO_n169 ngua horse - PA1.prn; không sửa/chạy lại/tạo đơn. Ghi chú phản ánh trạng thái hiện tại.
 
 19/10/2026: Rà soát sau Redis xem RA-SOAT-SAU-REDIS-20261019.md. Khôi phục 13 tin; mapping TRAN THACH theo ID, đơn DH-2610-267 3700 Lên mẫu. Duy Hiếu 50c chờ đúng ảnh trích dẫn, note nội bộ #3016. Không replay INJAE.
+
+## Quy tắc dọn Docker sau cập nhật — chủ xưởng xác nhận 22/10/2026
+- Sau mỗi lần cập nhật hub: xác minh health và đúng mã đang chạy trước khi dọn.
+- Chỉ giữ image hub hiện tại và một image hub dự phòng là bản hoạt động ngay trước cập nhật. latest và tag phiên bản có thể cùng trỏ một image.
+- Kiểm tra tất cả container (kể cả đã dừng); không xóa image được container sử dụng, không dùng force.
+- Chỉ xóa các image/tag cũ thuộc phucthanh-chatwoot-hub. Không dọn image Chatwoot/PostgreSQL/Redis hoặc ứng dụng khác theo quy tắc này.
+- Tuyệt đối không xóa volume, database, checkpoint, lịch sử chống trùng, file NAS hoặc dữ liệu ERP; không dùng docker system prune --volumes hay compose down -v.
+- Nếu bản mới lỗi: giữ image cũ để khôi phục, chưa dọn. Sau dọn kiểm tra health và báo số bản đã dọn.

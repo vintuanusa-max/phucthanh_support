@@ -1,5 +1,6 @@
 """Validated CANAVI JPEG plans; no implicit fabric axes or RGB conversion."""
 import math,re
+from hub.workflow_rules import jpg_size
 
 def validate(plan, objects, refs):
     if plan.get('issues') or plan.get('process')!='sublimation':
@@ -16,8 +17,7 @@ def validate(plan, objects, refs):
         if not p.get('sources') or not set(p['sources'])<=set(refs) or not p.get('basis_explanation'):raise ValueError('Thiếu bằng chứng khổ/cữ')
         w,h=p['width_cm'],p['height_cm']
         if any(type(v) not in (float,int) or not math.isfinite(v) or not 1<=v<=200 for v in (w,h)):raise ValueError('Khổ vải không hợp lệ')
-        if p['canvas_basis']=='raw_fabric':w-=2;h-=5 if h>=70 else 2.5
-        elif p['canvas_basis']!='explicit_output':raise ValueError('Chưa rõ khổ trước/sau co')
+        w,h=jpg_size(w,h,p['canvas_basis'],p['kind'])
         if min(w,h)<=0 or w*h*(300/2.54)**2>90_000_000:raise ValueError('Khổ vượt giới hạn an toàn')
         if p['kind']=='meter_fabric' and (p['canvas_basis']!='explicit_output' or abs(w-160)>.01):raise ValueError('Vải mét cần khổ xuất ngang 160 và cao có căn cứ')
         total_pixels+=w*h*(300/2.54)**2

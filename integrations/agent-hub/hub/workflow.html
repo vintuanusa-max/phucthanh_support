@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="vi"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Theo dõi đơn và file · Phúc Thành</title>
+<main>
+<h1>Hai luồng: Đơn hàng và File mẫu</h1>
+<p>Số lượng từ tin nhắn hoặc ảnh, có xác nhận đặt hàng: lên ERP Lên mẫu. Tăng lượng: Lên mẫu / Mẫu có sẵn / Đang chạy giấy. Giảm, hủy/xóa: Lên mẫu / Mẫu có sẵn. Các trạng thái sau đó: tạo đơn in thêm riêng. File nguồn có thể là tệp đính kèm hoặc link chia sẻ; thiếu quyền/file thì ghi chú để kiểm tra. Duyệt ở đây chỉ ghi nhận kiểm tra file, không RIP và không gửi khách.</p>
+<label>Token quản trị <input id="token" type="password" autocomplete="off"></label>
+<button id="connect">Kết nối</button> <button id="disconnect">Ngắt kết nối</button>
+<p id="status" role="status">Chưa kết nối. Token chỉ giữ trong bộ nhớ trang.</p>
+<label>Lọc nhóm / mã hồ sơ <input id="filter" type="search"></label>
+<label><input id="attention" type="checkbox"> Chỉ hồ sơ cần kiểm tra</label>
+<details><summary>Kiểm tra kỹ thuật: dịch vụ và cảnh báo</summary><h2>Dịch vụ và cảnh báo</h2><p>Đọc tin không có tin mới vẫn được coi là hoạt động khi có heartbeat. Không tự chạy lại tác vụ chưa rõ kết quả.</p>
+<div id="services"></div><ul id="alerts" aria-live="polite"></ul>
+</details><h2>Đơn hàng và File mẫu</h2><p>Mỗi hàng là một hồ sơ riêng; trạng thái đơn và trạng thái xuất file độc lập. Tối đa 100 hồ sơ gần nhất.</p>
+<table><thead><tr><th>Nhóm / Hồ sơ</th><th>Luồng 1 · Đơn ERP</th><th>Luồng 2 · File mẫu</th><th>Kiểm tra</th></tr></thead><tbody id="rows"></tbody></table>
+<h2>Lịch sử duyệt</h2><ul id="history"></ul>
+</main>
+<script>
+let state=null,timer=null,busy=false;
+const el=id=>document.getElementById(id);
+const text=(tag,value)=>{const n=document.createElement(tag);n.textContent=value;return n};
+const when=value=>new Date(value*1000).toLocaleString('vi-VN',{timeZone:'Asia/Bangkok'});
+const names={created:'Đã tạo ERP',done:'Đã xuất, chờ kiểm tra',review:'Cần kiểm tra',uncertain:'Chưa rõ kết quả — không phát lại',queued:'Đang chờ',exporting:'Đang xuất',planning:'Đang phân tích',evidence_ready:'Đủ bằng chứng',awaiting_approval:'Chờ duyệt',approved:'Đã duyệt nội bộ',rejected:'Yêu cầu sửa',superseded:'Đã có phiên bản mới'};
+async function api(path,body){const r=await fetch(path,{method:body?'POST':'GET',headers:{Authorization:'Bearer '+el('token').value,'Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});if(!r.ok)throw new Error('API '+r.status);return r.json()}
+function render(){if(!state)return;el('rows').replaceChildren();el('services').replaceChildren();el('alerts').replaceChildren();el('history').replaceChildren();
+ for(const s of state.controls.services)el('services').append(text('p',s.service+' — gần nhất '+when(s.seen)));
+ for(const a of state.controls.alerts){const d=JSON.parse(a.detail);el('alerts').append(text('li',(a.state==='active'?'CẦN KIỂM TRA: ':'ĐÃ PHỤC HỒI: ')+(d.service||d.job_id)+' — '+d.action+' ('+when(a.updated)+')'));}
+ const query=el('filter').value.toLowerCase();
+ for(const b of state.briefs){if(!JSON.stringify([b.brief_id,b.group,b.title]).toLowerCase().includes(query))continue;
+  const versions=state.controls.versions.filter(v=>v.brief_id===b.brief_id);
+  if(el('attention').checked&&!b.exports.some(e=>['review','uncertain'].includes(e.state))&&!versions.some(v=>v.state==='awaiting_approval'))continue;
+  const tr=document.createElement('tr'),who=document.createElement('td');who.append(text('strong',b.group||b.thread_id),text('p',b.title||b.brief_id));
+  const a=text('a','Mở ghi chú Chatwoot');a.href='http://localhost:3000/app/accounts/1/conversations/'+encodeURIComponent(b.conversation);a.target='_blank';a.rel='noreferrer';who.append(a);tr.append(who);
+  tr.append(text('td',b.intake?(names[b.intake.state]||b.intake.state):'Chưa liên kết lượt lên đơn'));
+  const files=document.createElement('td');for(const e of b.exports){files.append(text('p',e.kind+': '+(names[e.state]||e.state)));if(e.review_reason)files.append(text('p',e.review_reason));}if(!b.exports.length)files.append(text('p','Chưa có file xuất'));tr.append(files);
+  const actions=document.createElement('td');for(const v of versions){const box=document.createElement('details');box.append(text('summary',(names[v.state]||v.state)+' · '+v.id.slice(0,12)));box.append(text('pre',JSON.stringify(JSON.parse(v.manifest),null,2)));
+   if(v.state!=='superseded'){const note=document.createElement('textarea');note.placeholder='Lý do duyệt hoặc yêu cầu sửa';note.maxLength=1000;box.append(note);
+    for(const [decision,label] of [['approved','Duyệt nội bộ'],['rejected','Cần sửa']]){const btn=text('button',label);btn.onclick=async()=>{if(!note.value.trim()){note.focus();el('status').textContent='Cần ghi lý do kiểm tra.';return;}btn.disabled=true;try{await api('/workflow/versions/'+v.id+'/review',{decision,note:note.value});await refresh();}catch(e){el('status').textContent='Không lưu được: '+e.message;btn.disabled=false;}};box.append(btn);}}
+   actions.append(box);}tr.append(actions);el('rows').append(tr);}
+ for(const r of state.controls.reviews)el('history').append(text('li',when(r.created)+' · '+r.version_id.slice(0,12)+' · '+(names[r.decision]||r.decision)+' · '+r.note));
+}
+async function refresh(){if(busy)return;busy=true;try{state=await api('/workflow/status');render();el('status').textContent='Cập nhật '+new Date().toLocaleTimeString('vi-VN')+' · chỉ nội bộ';}catch(e){el('status').textContent='Mất kết nối hoặc không đủ quyền: '+e.message;}finally{busy=false;}}
+el('connect').onclick=()=>{clearInterval(timer);refresh();timer=setInterval(refresh,30000)};
+el('disconnect').onclick=()=>{clearInterval(timer);el('token').value='';state=null;for(const id of ['rows','alerts','services','history'])el(id).replaceChildren();el('status').textContent='Đã ngắt kết nối';};
+el('filter').oninput=render;el('attention').onchange=render;
+</script></html>

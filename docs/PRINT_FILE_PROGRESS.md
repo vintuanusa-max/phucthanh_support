@@ -78,3 +78,11 @@ Build TypeScript/Vite đạt; test API quyền và idempotency, test bridge ch�
 - [x] Giữ capture_allowed của cả Zalo/WhatsApp/Viber; không mở lại nhóm loại bỏ, nhóm nội bộ hoặc nhóm chưa được phép.
 - [x] Giữ job/source claims, hash, uncertain publication, preview private, nút Duyệt thủ công; không RIP/gửi khách. Không replay hồ sơ cũ hoặc tạo đơn ERP.
 - [ ] Chưa có đơn mới chạy thật xuyên suốt sau bản này. Nguồn thiếu/không rõ công nghệ, chỉ mockup hoặc cấu trúc chưa hỗ trợ vẫn cần review; không đồng nghĩa mọi file đều xuất tự động được.
+
+## Điều phối và ERP — 23/10/2026
+- [x] Mặc định chỉ liệt kê hồ sơ hiện tại chưa hoàn thành; hồ sơ done/archived/superseded/not_jpg không còn bị giữ lại chỉ vì có dữ liệu native selection. Job native đang chạy vẫn hiển thị.
+- [x] Bộ lọc Lịch sử hiển thị hồ sơ đã xong/đóng trong 1000 hồ sơ gần nhất; vẫn xem chi tiết, hồ sơ cũ không current vẫn bị khóa xuất.
+- [x] Tab ERP Tiến trình file in thêm bảng điều phối nhúng theo brief ID của đơn, chọn cụm Illustrator và nhập chiều ngang PET giữ tỷ lệ; giữ nút xuất theo chiều cao hiện có.
+- [x] Khóa chống trùng phía Hub giữ nguyên. 7 kiểm thử qua; API thật: 140 pending, 17 history, không có done trong pending.
+- Giới hạn: bảng nhúng dùng 127.0.0.1:8096 trên máy đang mở ERP. Chỉ dùng trực tiếp trên máy bot/Remote Desktop vào máy bot; chưa là API điều phối được proxy qua ERP cho các máy khác. Không mở dịch vụ ra LAN hoặc bỏ CSRF.
+- Điều phối hiện chọn cụm artwork trong PDF/AI; không thay đổi artboard gốc, không chỉnh màu tự động, không RIP/gửi khách hay tạo đơn ERP.

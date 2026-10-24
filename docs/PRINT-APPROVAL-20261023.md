@@ -42,3 +42,11 @@ Hồng Ánh có ảnh bổ sung sau OK: đã ghi nội bộ để đối chiếu
 Hub: hub/print_approval.py, hub/print_changes.py; bảng print_approvals/print_deliveries/print_change_sources.
 Windows: WhatsAppDesktopReader/code/whatsapp_desktop/print_sync.py điều phối hai đích; zalo_desktop/desktop_photo_transport.cjs gửi ảnh Zalo. Bộ đọc Zalo reader.py +vault giữ ảnh, checkpoint riêng.
 Xem thêm [ảnh nhân viên](STAFF-MEDIA-20261023.md), [checklist](CHECKLIST_VAN_HANH_HE_THONG.md).
+
+## 24/10/2026 — OK sau lời gửi duyệt mẫu
+- Nhận OK/Okay kèm xưng hô khi có ảnh mẫu của nhân viên và lời gửi mẫu/đề nghị duyệt của cùng nhân viên trong 120 giây quanh ảnh, cùng nhóm trong 24 giờ.
+- Không dùng giới hạn 5 phút khi đã có lời đề nghị duyệt rõ; chặn nếu có nội dung trao đổi xen giữa hoặc không có ảnh/lời gửi mẫu.
+- Bản tổng hợp bao gồm ảnh, lời đề nghị duyệt và câu xác nhận khách. Giữ fingerprint ảnh và kết quả gửi riêng từng kênh; không tạo lại đơn ERP.
+- Kiểm thử: OK trễ 13 phút, thiếu lời gửi mẫu, ảnh khách và trao đổi xen giữa; đã đạt.
+
+24/10: OK theo ngữ cảnh không chờ group quiet 120 giây, được xét ở lượt poll kế tiếp; vẫn phải tạo bằng chứng và qua worker gửi. Chưa có order_id ERP trong print_approvals, không dùng trạng thái gửi nhóm làm điều kiện duyệt ERP.

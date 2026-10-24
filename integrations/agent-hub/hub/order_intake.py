@@ -1,6 +1,7 @@
 """Independent, durable new-message order intake. Never sends public replies."""
 
 import base64
+from hub.workflow_errors import describe
 import json
 import re
 import time
@@ -19,7 +20,7 @@ def confirms_order(text):
     text = key(text)
     if re.search(r'\?|\b(chưa|không|khoan|đừng|hủy|huỷ)\b', text):
         return False
-    return bool(re.search(r'\b(ok|oke|đồng ý|chốt|đặt|làm giúp|in giúp)\b', text))
+    return bool(re.search(r'\b(ok|oke|đồng ý|chốt|đặt|làm giúp|in giúp|in luôn|in dùm|in giùm|cho in)\b', text))
 
 
 def image_only_caption_pending(message, order_text):
@@ -32,7 +33,7 @@ def image_only_caption_pending(message, order_text):
         and all(a.get('kind') == 'image' and a.get('state') == 'ready'
                 and a.get('sha256') and a.get('relative_path') for a in message['assets'])
         and not re.search(r'\?|\b(chưa|không|khoan|đừng|hủy|huỷ)\b', text)
-        and bool(re.search(r'\b(chạy|chốt|đặt|in giúp|làm giúp)\b', text))
+        and bool(re.search(r'\b(chạy|chốt|đặt|in giúp|làm giúp|in luôn|in dùm|in giùm)\b', text))
     )
 
 
@@ -303,6 +304,7 @@ class OrderIntake:
                         )
                     elif isinstance(exc, ValueError):
                         reason = str(exc)
+                    reason = describe(reason, "Tiếp nhận đơn ERP")
                     self.notify(
                         run,
                         "CẦN NHÂN VIÊN: Chưa lên đơn tự động. " + reason + ". Mã đối chiếu " + run_id[:12],
@@ -368,6 +370,7 @@ class OrderIntake:
             from hub.models import IntakeDecision
             from hub.agent_loop import verify_action
             orders, source_ids = [], []
+            line_sources = []
             if len(groups) > 4 or len(messages) > 12:
                 raise ValueError('Too many image groups; needs review')
             for group_number, group in enumerate(groups, 1):
@@ -396,11 +399,15 @@ class OrderIntake:
                 verify_action(self.engine.settings, check_context, 'propose_order_draft',
                               {'items': [o.model_dump(mode='json') for o in part.orders],
                                'source_message_ids': [m['message_id'] for m in group_messages]})
+                # Only a single line within an independently verified image cluster
+                # provides an unambiguous per-order source. Never guess within a cluster.
+                line_sources.extend([[m['message_id'] for m in group_messages] if len(part.orders)==1 else [] for _ in part.orders])
                 orders.extend(part.orders)
                 source_ids.extend(part.source_message_ids)
             agent_decision = IntakeDecision(action='draft_order', orders=orders, source_message_ids=source_ids)
             payload['image_groups'] = [[m['message_id'] for _, m in group] for group in groups]
             payload['image_groups_verified'] = True
+            payload['print_line_sources'] = line_sources
         agent_scope = self.agent_loop.scope(run)
         if agent_decision is None and agent_scope and max(m["timestamp"] for m in messages) >= agent_scope.get("enabled_after", float("inf")):
             if self.agent_loop.run(run, messages):
@@ -479,11 +486,15 @@ class OrderIntake:
         ids = set(decision.source_message_ids)
         if not ids or not ids <= set(range(1, len(messages) + 1)) or len(messages) not in ids:
             raise ValueError("Invalid order source IDs")
-        from hub.meter_product import apply_meter_product
-        meter_mapped = apply_meter_product(decision.orders, [messages[i-1] for i in sorted(ids)])
-        # Explicit fabric-print quantities may resolve MET; other codes require source text.
+        from hub.meter_product import apply_meter_lines
+        meter_mapped = apply_meter_lines(decision.orders, [messages[i-1] for i in sorted(ids)])
+        from hub.meter_product import apply_an_nguyen_sheets
+        meter_mapped |= apply_an_nguyen_sheets(decision.orders, [messages[i-1] for i in sorted(ids)], run['thread_id'])
+        from hub.mask_product import apply_mask_product
+        mask_mapped = apply_mask_product(decision.orders)
+        # Owner-approved semantic mapping: verified mask order line -> MATNA.
         for line in decision.orders:
-            if line.ma_san_pham and not (meter_mapped and line.ma_san_pham == "MET") and not re.search(
+            if line.ma_san_pham and id(line) not in mask_mapped and not (id(line) in meter_mapped and line.ma_san_pham == "MET") and not re.search(
                 r"(?<!\w)" + re.escape(key(line.ma_san_pham)) + r"(?!\w)", key(text)
             ):
                 raise ValueError("Product code is not present in source text")
@@ -507,6 +518,13 @@ class OrderIntake:
         for line in orders:
             line["ghi_chu_mau_do"] = clean_order_note(line["ghi_chu_mau_do"])
         payload["orders"] = orders
+        from hub.drive_order_brief import collect_drive_order
+        try:
+            collect_drive_order(self.engine, run, payload, messages)
+        except Exception:
+            self.engine.note(run['id']+':drive-design-review',run['conversation'],
+                'CẦN KIỂM TRA FILE DRIVE: hồ sơ thiết kế chưa nối được; đơn ERP vẫn xử lý riêng.',apply_capture=True)
+
         payload["request_id"] = ("chatwoot-id:" if binding else "chatwoot-intake:") + run["id"]
         with self.store.db() as db:
             db.execute(
@@ -600,6 +618,16 @@ class OrderIntake:
             )
 
     def submit(self, run):
+        # Re-read durable state: stale workers must never replay a completed/uncertain order.
+        with self.store.db() as db:
+            current = db.execute("SELECT * FROM intake_runs WHERE id=?", (run["id"],)).fetchone()
+        if not current or current["state"] != "evidence_ready":
+            return
+        run = dict(current)
+        policy = self.policy(run["account"])
+        if policy is None:
+            # Reader heartbeat expired: wait for a fresh policy, retaining evidence/idempotency.
+            return
         payload = json.loads(run["payload"])
         try:
             with self.store.db() as db:
@@ -612,7 +640,7 @@ class OrderIntake:
             if any(sender_key(json.loads(r[0])) == payload['sender_key'] and self.accepts(json.loads(r[0])) for r in newer):
                 self.state(run['id'], 'waiting_details', {'reason': 'Tin mới đến trước lúc ghi ERP; cần tổng hợp lại'})
                 return
-            if not self.engine.settings.erp_write or not allowed(self.policy(run["account"]), self.engine.settings.inboxes[run["account"]]["channel"], payload["group_name"]) or any(not self.accepts(m) for m in messages):
+            if not self.engine.settings.erp_write or not allowed(policy, self.engine.settings.inboxes[run["account"]]["channel"], payload["group_name"]) or any(not self.accepts(m) for m in messages):
                 raise ValueError("ERP disabled or policy changed")
             from hub.order_groups import image_groups
             groups = image_groups(messages)
@@ -678,3 +706,4 @@ class OrderIntake:
             "Đã tạo đơn ERP trạng thái Lên mẫu: " + codes + "\nBằng chứng NAS: " + payload["nas_evidence"],
             apply_capture=True,
         )
+

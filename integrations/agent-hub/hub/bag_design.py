@@ -54,12 +54,14 @@ Thông tin đọc từ ảnh có basis=image và evidence mô tả ô/nhãn; lu�
 
 def bag_plan(facts, panels=None):
     panels=panels or []
-    values={};conflicts=[]
+    values={};conflicts=[];unmapped=[]
     for fact in facts:
-        if fact.field not in FIELDS:raise ValueError('Unknown bag field')
+        if fact.field not in FIELDS:
+            unmapped.append(fact.field)
+            continue
         if fact.field in values and values[fact.field]!=fact.value:conflicts.append('Mâu thuẫn '+fact.field)
         values[fact.field]=fact.value
-    derived={};missing=[]
+    derived={};missing=['Thông tin bổ sung chưa dùng tính hình học: '+field for field in dict.fromkeys(unmapped)]
     def num(field):
         try:
             n=Decimal(values[field])

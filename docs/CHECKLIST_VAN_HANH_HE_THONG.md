@@ -39,3 +39,15 @@
 - [ ] Sau cập nhật: kiểm tra một ca thật phù hợp, ghi bằng chứng, giữ1image dự phòng; không dọn volume.
 
 Tra cứu: [Tổng quan](../TONG_QUAN_HE_THONG.md).
+
+## Cảnh báo xuất file nội bộ — 23/10/2026
+- [x] Hub monitor kiểm tra mỗi 30 giây: artwork_checks, native_selections, pet_exports, jpg_exports.
+- [x] Lỗi/review mới: ghi chú riêng tư gồm mã lỗi, nguồn, ID job, bước kẹt, lý do và việc cần kiểm tra.
+- [x] Heartbeat ArtworkInspector quá 20 phút: cảnh báo mất tín hiệu; không khẳng định worker chết vì có thể mất mạng hoặc Adobe bận.
+- [x] Trạng thái file không đổi quá 30 phút từ lúc observer ghi nhận: cảnh báo kẹt bước.
+- [x] Chống trùng bền vững theo job/trạng thái/lý do/loại cảnh báo bằng Engine.effect; kết quả gửi không rõ không tự gửi lại.
+- [x] Hồ sơ review cũ được lấy làm mốc, không phát lại hàng loạt khi bật tính năng. Thay đổi lỗi mới sẽ báo lại.
+- [x] Kiểm thử DB giả: lịch sử, lỗi mới, dedup, che khóa, worker offline, trạng thái hoàn thành, giữ nguyên intake. Hub thật health200, observer khởi tạo 217 hồ sơ.
+- [x] Không sửa/tạo đơn ERP, không tự chạy lại xuất file, không RIP hoặc gửi khách.
+- Giới hạn: Hub hoặc Chatwoot ngừng hoạt động thì không gửi được cảnh báo tức thì. Khi hoạt động lại sẽ đối chiếu trạng thái còn kẹt. Không phải dịch vụ giám sát độc lập ngoài Hub.
+- Mã: integrations/agent-hub/hub/file_notices.py; được gọi độc lập trong monitor_workflow của app.py. Bảng file_notice_watch và file_notice_meta chỉ phục vụ cảnh báo.

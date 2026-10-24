@@ -34,11 +34,15 @@ def select_reprint(message, history):
     return chosen
 
 
+def simple_ok(text):
+    return bool(re.fullmatch(r'ok(?:ay)?[,.! ]*(?:(?:em|anh|chị|cháu|con|nhé|nhe|nha)[,.! ]*)*', key(text)))
+
+
 def is_confirmation(text):
     text = key(text)
     if re.search(r'\b(chưa|không|đừng|khoan|hủy|huỷ|đợi|chờ|sửa|thử|test|nếu)\b|\?', text):
         return False
-    if re.fullmatch(r'ok(?:ay)?[,.! ]*(?:nhé|nhe|nha)[.! ]*', text):
+    if simple_ok(text):
         return True
     return bool(re.search(r'\b(ok[,.! ]*in|in\s+(nhé|nhe|nha|đi)|in\s+(?:luôn|ln)\s+(?:nhé|nhe|nha|đi|giúp)|chốt\s+(in|mẫu|luôn|đi|nhé|nhe|nha|rồi)|duyệt(?:\s+(?:mẫu|rồi))?|làm\s+gấp|in\s+gấp|cho\s+chạy|chạy\s+gấp|in\s+theo\s+mẫu)\b', text))
 
@@ -77,9 +81,16 @@ def select_approval(confirmation, history):
         last=photos[-1]
         if contextual_confirmation(confirmation['text']) and last.get('origin') != 'staff':
             raise ValueError('Câu chốt cần gắn với mẫu nhân viên gửi duyệt')
-        if re.fullmatch(r'ok(?:ay)?[,.! ]*(?:nhé|nhe|nha)[.! ]*',key(confirmation['text'])):
-            if confirmation['timestamp']-last['timestamp']>300:
-                raise ValueError('Câu OK chưa gắn rõ với ảnh mẫu gần đây')
+        if simple_ok(confirmation['text']):
+            prompts=[m for m in same if m.get('origin')=='staff' and author(m)==author(last)
+                     and last['timestamp']-120 <= m['timestamp'] <= last['timestamp']+120
+                     and re.search(r'(gửi mẫu|gởi mẫu|duyệt.*mẫu|mẫu.*duyệt|chốt.*mẫu)',key(m.get('text','')))]
+            if last.get('origin')!='staff' or not prompts:
+                raise ValueError('Câu OK cần ảnh mẫu và lời gửi/đề nghị duyệt của nhân viên')
+            prompt=prompts[-1]
+            intervening=[m for m in same if m['timestamp']>max(prompt['timestamp'],last['timestamp']) and m['message_id']!=confirmation['message_id'] and m.get('text','').strip()]
+            if intervening:
+                raise ValueError('Có trao đổi xen giữa lời gửi mẫu và OK; cần đối chiếu nội dung')
         chosen=[m for m in photos if author(m)==author(last) and last['timestamp']-120 <= m['timestamp']]
         if any(author(m)!=author(last) for m in photos if m['timestamp']>=chosen[0]['timestamp']):
             raise ValueError('Nhiều người gửi mẫu xen kẽ; cần chọn đúng mẫu')
@@ -93,6 +104,7 @@ def select_approval(confirmation, history):
             raise ValueError('Ảnh mẫu chưa đầy đủ hoặc đã sửa')
         # Preserve short follow-up details from the approving customer, including quantity/placement.
         chosen += [m for m in between if author(m)==author(confirmation) and m not in chosen]
+        if simple_ok(confirmation['text']):chosen += [m for m in prompts if m not in chosen]
         if confirmation not in chosen:chosen.append(confirmation)
     if len(chosen)>12 or sum(len(m.get('images',[])) for m in chosen)>8:
         raise ValueError('Quá nhiều ảnh/tin; cần nhân viên tách mẫu')
@@ -133,7 +145,7 @@ class PrintApprovals:
         from hub.print_changes import poll_changes
         if poll_changes(self):return True
         with self.engine.store.db() as db:
-            rows=db.execute("SELECT c.payload FROM captures c LEFT JOIN print_approvals p ON p.account=c.account AND p.thread_id=c.thread_id AND p.confirmation_id=c.message_id WHERE p.id IS NULL AND NOT EXISTS(SELECT 1 FROM print_change_sources x WHERE x.account=c.account AND x.thread_id=c.thread_id AND x.message_id=c.message_id) AND json_extract(c.payload,'$.timestamp')>=? AND json_extract(c.payload,'$.timestamp')<? ORDER BY json_extract(c.payload,'$.timestamp') DESC LIMIT 500",(route['enabled_after'],time.time()-120)).fetchall()
+            rows=db.execute("SELECT c.payload FROM captures c LEFT JOIN print_approvals p ON p.account=c.account AND p.thread_id=c.thread_id AND p.confirmation_id=c.message_id WHERE p.id IS NULL AND NOT EXISTS(SELECT 1 FROM print_change_sources x WHERE x.account=c.account AND x.thread_id=c.thread_id AND x.message_id=c.message_id) AND json_extract(c.payload,'$.timestamp')>=? AND json_extract(c.payload,'$.timestamp')<? ORDER BY json_extract(c.payload,'$.timestamp') DESC LIMIT 500",(route['enabled_after'],time.time())).fetchall()
         for row in rows:
             m=json.loads(row[0])
             from hub.quality_monitor import monitored
@@ -147,8 +159,8 @@ class PrintApprovals:
             with self.engine.store.db() as db:
                 history=[json.loads(r[0]) for r in db.execute('SELECT payload FROM captures WHERE account=? AND thread_id=? AND json_extract(payload,\'$.timestamp\')>=?',(m['account'],m['thread_id'],m['timestamp']-86400))]
             history=staff_context(history,policy,cfg.get('channel',''))
-            # Wait for all messages in this group to settle; a subsequent correction needs review.
-            if any(x['timestamp']>time.time()-120 for x in history):continue
+            # Contextual OK is eligible immediately; other requests retain the group quiet window.
+            if not simple_ok(m['text']) and any(x['timestamp']>time.time()-120 for x in history):continue
             identity=hashlib.sha256(json.dumps([m['account'],m['thread_id'],m['message_id']]).encode()).hexdigest()
             payload={'destination':route,'confirmation':m['message_id']}
             try:

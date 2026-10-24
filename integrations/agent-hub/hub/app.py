@@ -32,11 +32,46 @@ def create_app(settings=None, engine=None, start_worker=True):
     settings.validate()
     store = engine.store if engine else Store(settings.database)
     engine = engine or Engine(settings, store, Chatwoot(settings), Gemini(settings), ERP(settings))
+    from hub.workflow_control import WorkflowControl
+    workflow = WorkflowControl(store)
     stop = threading.Event()
+    from hub.order_print_bridge import OrderPrintBridge
+    print_bridge = OrderPrintBridge(engine)
+
+    from hub.native_auto import initialize as native_init, tick as native_tick
+    native_init(engine)
+    def monitor_native():
+        while not stop.is_set():
+            try:native_tick(engine)
+            except Exception:logging.getLogger(__name__).exception('Native selector failed')
+            stop.wait(5)
+
+    def monitor_customer_approvals():
+        from hub.customer_approval_links import tick
+        while not stop.is_set():
+            try:tick(engine)
+            except Exception:logging.getLogger(__name__).exception('Customer approval comparison failed')
+            stop.wait(30)
+
+    def monitor_workflow():
+        while not stop.is_set():
+            try:
+                from hub.file_notices import tick as file_notice_tick
+                file_notice_tick(engine)
+            except Exception:
+                logging.getLogger(__name__).exception('File notice monitor failed')
+            try:
+                workflow.monitor(['hub_worker'] + [prefix+a for a,c in settings.inboxes.items() if c.get('capture_enabled') for prefix in ('reader:', 'artwork:')])
+                print_bridge.tick()
+            except Exception:
+                logging.getLogger(__name__).exception('Workflow monitor failed')
+            stop.wait(30)
+
 
     def worker():
         while not stop.is_set():
             try:
+                workflow.beat('hub_worker')
                 worked = engine.process_one()
             except Exception as exc:
                 logging.getLogger(__name__).error("Worker operation halted: %s", type(exc).__name__)
@@ -46,6 +81,9 @@ def create_app(settings=None, engine=None, start_worker=True):
 
     @asynccontextmanager
     async def lifespan(app):
+        if start_worker:
+            from hub.native_auto import recover as native_recover
+            native_recover(engine)
         store.recover()
         engine.order_intake.recover()
         engine.artwork_checks.recover()
@@ -53,8 +91,15 @@ def create_app(settings=None, engine=None, start_worker=True):
         if start_worker:
             thread = threading.Thread(target=worker, daemon=True)
             thread.start()
+        native_thread=threading.Thread(target=monitor_native,daemon=True)
+        if start_worker:native_thread.start()
+        monitor = threading.Thread(target=monitor_workflow, daemon=True)
+        if start_worker: monitor.start()
+        approval_thread=threading.Thread(target=monitor_customer_approvals,daemon=True)
+        if start_worker:approval_thread.start()
         yield
         stop.set()
+        if start_worker: monitor.join(timeout=3)
         if thread:
             thread.join(timeout=3)
 
@@ -68,6 +113,36 @@ def create_app(settings=None, engine=None, start_worker=True):
     def require_ingest(authorization: str = Header(default="")):
         if not hmac.compare_digest(authorization, "Bearer " + settings.ingest_token):
             raise HTTPException(401, "Adapter authorization required")
+
+    @app.get('/dispatch', dependencies=[Depends(require_admin)])
+    def dispatch_list():
+        from hub.dispatch_control import listing
+        return listing(engine)
+
+    @app.get('/dispatch/{bid}', dependencies=[Depends(require_admin)])
+    def dispatch_detail(bid: str):
+        from hub.dispatch_control import detail
+        try: return detail(engine,bid)
+        except ValueError as ex: raise HTTPException(400,str(ex))
+
+    @app.post('/dispatch/{bid}', dependencies=[Depends(require_admin)])
+    def dispatch_submit(bid: str,data: dict):
+        from hub.dispatch_control import submit
+        try: return submit(engine,bid,data)
+        except ValueError as ex: raise HTTPException(409,str(ex))
+
+    @app.get('/adapters/{account}/native-selections', dependencies=[Depends(require_ingest)])
+    def native_pending(account: str):
+        from hub.native_selection import pending
+        return {'job':pending(engine,account)}
+
+    @app.post('/adapters/{account}/native-selections/{identity}', dependencies=[Depends(require_ingest)])
+    async def native_result(account: str,identity: str,request: Request):
+        from hub.native_selection import result
+        raw=await request.body()
+        if len(raw)>46000000:raise HTTPException(413,'Payload too large')
+        try:return result(engine,account,identity,json.loads(raw))
+        except (ValueError,KeyError,TypeError) as ex:raise HTTPException(400,str(ex))
 
     @app.get('/agentic/status', dependencies=[Depends(require_admin)])
     def agentic_status():
@@ -284,6 +359,7 @@ def create_app(settings=None, engine=None, start_worker=True):
             raise HTTPException(404)
         try:
             engine.order_intake.sync_policy(account, config)
+            workflow.beat('reader:' + account)
         except ValueError as exc:
             raise HTTPException(422, "Invalid order policy") from exc
         return {"stored": True, "scope": engine.order_intake.scope(account)}
@@ -300,6 +376,25 @@ def create_app(settings=None, engine=None, start_worker=True):
             if len(content)>48_000_000:raise HTTPException(413,'JPG preview limit')
         try:return engine.artwork_checks.jpg.complete(account,identity,json.loads(content))
         except (ValueError,KeyError) as exc:raise HTTPException(422,'Invalid JPG report') from exc
+
+    @app.get('/adapters/{account}/print-approvals', dependencies=[Depends(require_ingest)])
+    def pending_print_approval(account: str):
+        with store.db() as d:r=d.execute("SELECT * FROM erp_print_approvals WHERE account=? AND state='queued' LIMIT 1",(account,)).fetchone()
+        return {'job':{'id':r['id'],**json.loads(r['payload'])} if r else None}
+
+    @app.post('/adapters/{account}/print-approvals/{identity}', dependencies=[Depends(require_ingest)])
+    def complete_print_approval(account: str,identity: str,data: dict):
+        with store.db() as d:
+            r=d.execute('SELECT * FROM erp_print_approvals WHERE id=? AND account=?',(identity,account)).fetchone()
+            if not r:raise HTTPException(404)
+            if r['state']!='queued':return {'state':r['state']}
+            p=json.loads(r['payload']);state='review' if data.get('error') else 'done'
+            expected=[f['group']+'/'+f['name'] for f in p['files']]
+            if state=='done' and data.get('paths')!=expected:raise HTTPException(422,'Wrong copy receipt')
+            p['detail']=str(data['error'])[:900] if state=='review' else 'Đã duyệt và copy file: '+', '.join(expected)
+            p['reported']=False
+            d.execute('UPDATE erp_print_approvals SET state=?,payload=? WHERE id=?',(state,json.dumps(p),identity))
+        return {'state':state}
 
     @app.get('/adapters/{account}/pet-exports', dependencies=[Depends(require_ingest)])
     def pending_pet(account: str):
@@ -328,6 +423,8 @@ def create_app(settings=None, engine=None, start_worker=True):
 
     @app.get('/adapters/{account}/artwork-checks', dependencies=[Depends(require_ingest)])
     def pending_artwork(account: str):
+        if account not in settings.inboxes: raise HTTPException(404)
+        workflow.beat('artwork:' + account)
         return {'job':engine.artwork_checks.pending(account)}
 
     @app.post('/adapters/{account}/artwork-checks/{identity}', dependencies=[Depends(require_ingest)])
@@ -527,5 +624,23 @@ def create_app(settings=None, engine=None, start_worker=True):
                 },
             )
         return {"stored": True}
+
+    @app.get('/workflow/status', dependencies=[Depends(require_admin)])
+    def workflow_status():
+        from hub.workflow_status import snapshot
+        with store.db() as db:
+            briefs = snapshot(db)
+        return {'briefs': briefs, 'controls': workflow.state(), 'read_only': True}
+
+    @app.get('/workflow', response_class=HTMLResponse)
+    def workflow_page():
+        return Path(__file__).with_name('workflow.html').read_text(encoding='utf-8')
+
+    @app.post('/workflow/versions/{identity}/review', dependencies=[Depends(require_admin)])
+    def review_version(identity: str, data: dict):
+        try:
+            return workflow.decide(identity, data.get('decision'), data.get('note'))
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
 
     return app
