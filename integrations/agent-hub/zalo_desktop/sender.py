@@ -12,6 +12,7 @@ import httpx
 import psutil
 
 from .reader import load_config
+from .runtime import running_session
 
 
 class Journal:
@@ -36,7 +37,7 @@ class Journal:
 
     def result(self, key, result):
         with self.db:
-            self.db.execute("UPDATE attempts SET result=? WHERE id=?", (json.dumps(result), key))
+            self.db.execute("UPDATE attempts SET result=?,reported=0 WHERE id=?", (json.dumps(result), key))
 
     def pending(self):
         return self.db.execute("SELECT id,result FROM attempts WHERE reported=0").fetchall()
@@ -62,18 +63,14 @@ class Sender:
         self.halted = (self.home / "halt.flag").exists()
 
     def transport(self, item, action, client_id=""):
-        candidates = []
-        for process in psutil.process_iter(["pid", "exe", "cmdline"]):
-            if (process.info["exe"] or "").lower() != self.cfg["zalo_exe"].lower():
-                continue
-            if not any(a.startswith("--type=") for a in process.info["cmdline"] or []):
-                candidates.append(process.pid)
-        if len(candidates) != 1:
-            return {"state": "blocked", "detail": "Zalo Desktop chưa mở hoặc không đúng phiên"}
+        session = running_session(self.cfg["zalo_exe"])
+        if not session:
+            return {"state": "blocked", "detail": "Zalo session unavailable", "cleanup": True}
+        identity, executable = session
         request = {
             "action": action,
-            "pid": candidates[0],
-            "zalo_exe": self.cfg["zalo_exe"],
+            "pid": identity[1],
+            "zalo_exe": executable,
             "user_id": self.cfg["user_id"],
             "thread_id": item["thread_id"],
             "display_name": item["display_name"],
@@ -113,7 +110,17 @@ class Sender:
         if not self.journal.reserve(key):
             return
         try:
-            result = self.transport(item, "prepare")
+            # Retry only transient failures proven to precede send.
+            transient = {"Main renderer unavailable", "Inspector port busy", "Zalo session unavailable"}
+            for attempt in range(3):
+                result = self.transport(item, "prepare")
+                self.last_preflight = {"attempt": attempt + 1, "state": result.get("state"),
+                                       "detail": result.get("detail", ""), "at": time.time()}
+                self.status()
+                if (self.halted or result.get("cleanup") is not True or
+                    result.get("state") != "blocked" or result.get("detail") not in transient or attempt == 2):
+                    break
+                time.sleep(5 * (attempt + 1))
             if result.get("state") == "ready" and not self.halted:
                 cid = result["client_id"]
                 prepared = self.http.post(self.base + "/prepare/" + key, json={"client_id": cid})
@@ -155,6 +162,7 @@ class Sender:
                     "phase": "halted" if self.halted else ("waiting" if error else "running"),
                     "error": error,
                     "pending_results": len(self.journal.pending()),
+                    "last_preflight": getattr(self, "last_preflight", None),
                 }
             ),
             encoding="utf-8",
@@ -183,7 +191,17 @@ def main():
                     sender.tick()
                 except Exception as exc:
                     error = type(exc).__name__
-                sender.status(error)
+                # Status-file sharing violations must not terminate the sender.
+                for status_attempt in range(3):
+                    try:
+                        sender.status(error)
+                        break
+                    except OSError as status_error:
+                        if status_attempt == 2:
+                            import sys
+                            print("Heartbeat write failed: " + type(status_error).__name__, file=sys.stderr, flush=True)
+                        else:
+                            time.sleep(0.2 * (status_attempt + 1))
                 if args.once:
                     return
                 time.sleep(3)

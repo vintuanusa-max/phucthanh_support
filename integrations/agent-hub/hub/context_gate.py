@@ -9,7 +9,7 @@ from pydantic import Field
 from hub.models import StrictModel
 from hub.order_policy import capture_allowed, key
 
-VERSION = 'context-v1'
+VERSION = 'context-v3-position-lines'
 
 # These fields belong to artwork preparation, not acceptance of a new order.
 # Unknown missing fields, quantity/intent ambiguities and conflicts still block.
@@ -61,6 +61,7 @@ def classify(settings, context, images):
         'Thiếu file gốc, kích thước in, màu, xác nhận thiết kế, product_details hay design_confirmation chỉ giữ luồng file; không chặn đơn. '
         'missing_fields chỉ chặn khi chưa rõ ý định đặt, số lượng hoặc phân bổ số lượng giữa các mẫu. Thiếu mã sản phẩm ERP, giá hoặc ngày giao không phải lý do chặn đơn mới. Nêu conflicts khi có mâu thuẫn thực sự; trả đúng JSON theo schema.'
     )
+    system += ' MỖI VỊ TRÍ IN LÀ MỘT DÒNG ERP RIÊNG. Khi đủ căn cứ cùng sản phẩm có N vị trí in: tạo N items, mỗi item có số lượng sản phẩm được in ở vị trí đó, ten_mau/ghi_chu nêu đúng logo và vị trí. Các dòng của cùng sản phẩm dùng cùng print_position_group (khóa ngắn ổn định trong yêu cầu như san_pham_1); mẫu độc lập để null. Ví dụ 600 nón in anfa và Hữu Nghị ở hai vị trí: 2 dòng 600, cùng print_position_group; tổng 1200 lượt in nhưng chỉ 600 nón. Không chia thành 300, không gộp hai vị trí dù cùng mã hàng. Thiếu mã từng vị trí để null/Chờ mã, không suy mã từ logo. Chỉ dùng nhóm khi nguồn/xác nhận chứng minh cùng sản phẩm; ảnh mơ hồ vẫn kiểm tra nội bộ. '
     schema = IntentDecision.model_json_schema()
     with httpx.Client(timeout=60, follow_redirects=False, trust_env=False) as client:
         response = client.post(

@@ -17,6 +17,8 @@ class Engine:
     def __init__(self, settings, store, chatwoot, agent, erp):
         self.settings, self.store = settings, store
         self.cw, self.agent, self.erp = chatwoot, agent, erp
+        from hub.intake_management import IntakeManagement
+        self.intake_management = IntakeManagement(self)
         self.lock = threading.RLock()
         from hub.customer_mapping import CustomerMappings
         from hub.order_intake import OrderIntake
@@ -171,6 +173,7 @@ class Engine:
         self.order_intake.design_briefs.collect(payload['run'], payload['messages'])
 
     def process_one(self):
+        self.intake_management.poll()
         self.pending_guard.poll()
         self.store.expire_deliveries()
         job = self.store.claim()

@@ -21,7 +21,8 @@ def addition_request(messages):
         raise ValueError('Nguồn đặt thêm xen người hoặc đã sửa/thu hồi')
     totals=set()
     for m in messages:
-        if m['message_id']!=source['message_id']:
+        from hub.intake_lifecycle import explicit_total
+        if m['message_id']!=source['message_id'] and explicit_total(m.get('text','')):
             totals.update(piece_quantities(m.get('text','')))
     if len(totals)>1:raise ValueError('Có nhiều tổng số lượng khác nhau')
     return {'source_message_id':source['message_id'],'delta':next(iter(values)),

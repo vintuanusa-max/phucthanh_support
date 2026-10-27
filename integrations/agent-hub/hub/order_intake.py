@@ -23,7 +23,7 @@ def confirms_order(text):
     return bool(re.search(r'\b(ok|oke|đồng ý|chốt|đặt|làm giúp|in giúp|in luôn|in dùm|in giùm|cho in)\b', text))
 
 
-def image_only_caption_pending(message, order_text):
+def image_only_caption_pending(message, order_text, *, image_proposal=False):
     """Allow only the legacy caption marker, never a missing media attachment."""
     text = key(order_text)
     return (
@@ -33,7 +33,7 @@ def image_only_caption_pending(message, order_text):
         and all(a.get('kind') == 'image' and a.get('state') == 'ready'
                 and a.get('sha256') and a.get('relative_path') for a in message['assets'])
         and not re.search(r'\?|\b(chưa|không|khoan|đừng|hủy|huỷ)\b', text)
-        and bool(re.search(r'\b(chạy|chốt|đặt|in giúp|làm giúp|in luôn|in dùm|in giùm)\b', text))
+        and (image_proposal or bool(re.search(r'\b(chạy|chốt|đặt|in giúp|làm giúp|in luôn|in dùm|in giùm)\b', text)))
     )
 
 
@@ -75,6 +75,14 @@ class OrderIntake:
 
     def sync_policy(self, account, config):
         value = sanitize(config)
+        # NAS config.json delivered by the Zalo reader is authoritative for all channels.
+        if account == 'zalo-personal-1':
+            import os
+            path=os.environ.get('GROUP_CUSTOMER_MAPPING_FILE')
+            if path:
+                from hub.mapping_file import synchronize
+                synchronize(config,path)
+
         with self.store.db() as db:
             db.execute(
                 "INSERT OR REPLACE INTO intake_policy VALUES(?,?,?)",
@@ -143,6 +151,11 @@ class OrderIntake:
         return any(s.get("enabled_after") and message["timestamp"] >= s["enabled_after"] for s in (scope, media))
 
     def notify(self, run, reason):
+        with self.store.db() as db:
+            current=db.execute('SELECT state,result FROM intake_runs WHERE id=?',(run['id'],)).fetchone()
+        if current and current['state']=='ignored' and json.loads(current['result']).get('intent'):
+            return
+
         self.engine.store.set_owner(run["conversation"], "human")
         self.engine.effect(
             run["id"] + ":open", run["conversation"], "status", {"status": "open"}, apply_capture=True
@@ -150,47 +163,63 @@ class OrderIntake:
         self.engine.note(run["id"] + ":notice", run["conversation"], reason, apply_capture=True)
 
     def state(self, identity, state, result=None):
+        if state == 'review':
+            from hub.intake_intent import classify, evidence, HISTORY
+            with self.store.db() as db:
+                row=db.execute('SELECT * FROM intake_runs WHERE id=?',(identity,)).fetchone()
+                proposals=db.execute('SELECT 1 FROM agent_proposals WHERE run_id=? LIMIT 1',(identity,)).fetchone()
+                if row and row['state'] not in ('sending','uncertain','created','duplicate') and not proposals:
+                    p=json.loads(row['payload']);category,why=classify(evidence(db,row,p),p,result)
+                    if category in HISTORY:
+                        state='ignored';result={**(result or {}),'intent':category,'reason':why,'erp_committed':False}
         with self.store.db() as db:
             db.execute(
                 "UPDATE intake_runs SET state=?,result=? WHERE id=?",
                 (state, json.dumps(result or {}, ensure_ascii=False), identity),
             )
+        if state in ('created','duplicate'):
+            from hub.print_linking import sync_links
+            sync_links(self.store)
 
     def poll(self):
         """One operation at a time; claims survive restart without replaying writes."""
+        from hub.intake_models import poll as poll_models
+        if poll_models(self):return True
         if self.additions.recover_notice():return True
         with self.store.db() as db:
             expired = db.execute(
                 "SELECT * FROM intake_runs WHERE state='waiting_details' "
-                "AND COALESCE(json_extract(payload,'$.first_timestamp'),created)<? ORDER BY created LIMIT 1",
-                (time.time() - 1800,),
-            ).fetchone()
+                "AND COALESCE(json_extract(payload,'$.last_timestamp'),json_extract(payload,'$.first_timestamp'),created)<? ORDER BY created",
+                (time.time() - self.engine.intake_management.seconds(),),
+            ).fetchall()
+            expired = next((x for x in expired if self.engine.intake_management.enabled(x['account'])),None)
         if expired:
             pending_payload = json.loads(expired['payload'])
-            deadline = pending_payload.get('first_timestamp', expired['created']) + 1800
+            deadline = pending_payload.get('last_timestamp', pending_payload.get('first_timestamp', expired['created'])) + self.engine.intake_management.seconds()
             with self.store.db() as db:
                 supplements = db.execute(
                     "SELECT c.payload FROM captures c LEFT JOIN intake_sources s ON s.capture_id=c.id "
                     "WHERE c.account=? AND c.thread_id=? AND s.capture_id IS NULL "
-                    "AND json_extract(c.payload,'$.timestamp')<=? "
                     "AND json_extract(c.payload,'$.timestamp')>=?",
-                    (expired['account'], expired['thread_id'], deadline, deadline-1800),
+                    (expired['account'], expired['thread_id'], pending_payload.get('last_timestamp', expired['created'])),
                 ).fetchall()
             if not any(sender_key(json.loads(r[0])) == pending_payload['sender_key']
                        and self.accepts(json.loads(r[0])) for r in supplements):
                 if self.image_timeout_review(dict(expired), pending_payload):
                     return True
-                self.state(expired['id'], 'review', {'reason': 'Chờ quá 30 phút, chưa đủ thông tin'})
-                self.notify(dict(expired), 'CẦN NHÂN VIÊN: Yêu cầu đã chờ 30 phút nhưng chưa đủ thông tin để lên đơn.')
+                self.state(expired['id'], 'review', {'reason': 'Đã hết thời gian chờ cấu hình, chưa đủ thông tin'})
+                self.notify(dict(expired), 'CẦN NHÂN VIÊN: Yêu cầu đã hết thời gian chờ cấu hình nhưng chưa đủ thông tin để lên đơn.')
                 return True
         with self.store.db() as db:
             waiting = db.execute(
-                "SELECT * FROM intake_runs WHERE state='evidence_ready' ORDER BY created LIMIT 1"
-            ).fetchone()
+                "SELECT * FROM intake_runs WHERE state='evidence_ready' ORDER BY created"
+            ).fetchall()
+            waiting = next((x for x in waiting if self.engine.intake_management.enabled(x['account'])),None)
         if waiting:
             self.submit(dict(waiting))
             return True
         for account, cfg in self.engine.settings.inboxes.items():
+            if not self.engine.intake_management.enabled(account):continue
             scope = self.scope(account)
             if not scope.get("enabled_after") or self.policy(account) is None:
                 continue
@@ -203,6 +232,7 @@ class OrderIntake:
                     (account, scope["enabled_after"]),
                 ).fetchall()
             available = [(r["id"], json.loads(r["payload"])) for r in rows]
+            checked_streams = set()
             for identity, message in available:
                 if not self.accepts(message):
                     with self.store.db() as db:
@@ -210,20 +240,29 @@ class OrderIntake:
                             "INSERT OR IGNORE INTO intake_sources VALUES(?,?)", (identity, "policy_skip")
                         )
                     continue
-                # Only join the same sender in the same group, and never cross activation.
-                batch = [
-                    (i, m)
-                    for i, m in available
-                    if m["thread_id"] == message["thread_id"]
-                    and sender_key(m) == sender_key(message)
-                    and 0 <= m["timestamp"] - message["timestamp"] <= 1800
-                    and self.accepts(m)
-                ]
-                if time.time() - max(m["timestamp"] for _, m in batch) < 120:
+                stream_key = (message['thread_id'], sender_key(message))
+                if stream_key in checked_streams:
                     continue
+                checked_streams.add(stream_key)
+                # Load the complete sender/group stream, not only the first 200 global rows.
+                with self.store.db() as db:
+                    stream = db.execute(
+                        "SELECT c.id,c.payload,j.state AS job_state FROM captures c "
+                        "LEFT JOIN jobs j ON j.id=c.id LEFT JOIN intake_sources s ON s.capture_id=c.id "
+                        "WHERE c.account=? AND c.thread_id=? AND s.capture_id IS NULL "
+                        "AND json_extract(c.payload,'$.timestamp')>=? ORDER BY json_extract(c.payload,'$.timestamp'),c.rowid",
+                        (account, message['thread_id'], scope['enabled_after'])).fetchall()
+                candidates = [(r['id'], json.loads(r['payload']), r['job_state']) for r in stream]
+                candidates = [(i,m,st) for i,m,st in candidates
+                              if sender_key(m)==sender_key(message) and self.accepts(m)]
+                from hub.intake_quiet import settled_batch
+                selected = settled_batch(candidates, time.time(), self.engine.intake_management.seconds())
+                if not selected:
+                    continue
+                batch = [(i,m) for i,m,_ in selected]
                 with self.store.db() as db:
                     db.execute(
-                        "UPDATE intake_runs SET state='waiting_details' WHERE account=? AND thread_id=? "
+                        "UPDATE intake_runs SET state='waiting_details',payload=json_remove(payload,'$.request_id','$.orders','$.image_base64','$.nas_evidence','$.image_groups_verified','$.image_timeout_attempted','$.print_line_sources') WHERE account=? AND thread_id=? "
                         "AND state IN ('awaiting_evidence','evidence_ready') "
                         "AND json_extract(payload,'$.sender_key')=?",
                         (account, message['thread_id'], sender_key(message)),
@@ -231,8 +270,8 @@ class OrderIntake:
                 # Recover uncommitted image context when text arrives after the settle window.
                 with self.store.db() as db:
                     prior = db.execute(
-                        "SELECT c.id,c.payload FROM captures c JOIN intake_sources s ON s.capture_id=c.id "
-                        "JOIN intake_runs r ON r.id=s.run_id AND (r.state IN ('ignored','waiting_details') OR (r.state='review' AND (?=1 OR (?=1 AND (json_extract(r.result,'$.reason') IN ('Chờ quá 30 phút, chưa đủ thông tin','Đã đọc ảnh sau 30 phút; chưa xác định đủ dữ liệu đơn mới') OR EXISTS(SELECT 1 FROM agent_actions a WHERE a.run_id=r.id AND a.state='done' AND (a.tool='request_customer_clarification' OR (a.tool='escalate_to_human' AND instr(lower(json_extract(a.args,'$.reason')),'số lượng')>0) OR (a.tool='prepare_print_quote' AND json_extract(a.result,'$.state')='missing_fields')))))) AND json_extract(r.payload,'$.submitted_payload') IS NULL AND json_extract(r.payload,'$.request_id') IS NULL)) "
+                        "SELECT c.id,c.payload,r.result AS source_result FROM captures c JOIN intake_sources s ON s.capture_id=c.id "
+                        "JOIN intake_runs r ON r.id=s.run_id AND (r.state IN ('ignored','waiting_details') OR (r.state='review' AND (?=1 OR (?=1 AND (json_extract(r.result,'$.reason') IN ('Đã hết thời gian chờ cấu hình, chưa đủ thông tin','Đã đọc ảnh sau 30 phút; chưa xác định đủ dữ liệu đơn mới') OR EXISTS(SELECT 1 FROM agent_actions a WHERE a.run_id=r.id AND a.state='done' AND (a.tool='request_customer_clarification' OR (a.tool='escalate_to_human' AND instr(lower(json_extract(a.args,'$.reason')),'số lượng')>0) OR (a.tool='prepare_print_quote' AND json_extract(a.result,'$.state')='missing_fields')))))) AND json_extract(r.payload,'$.submitted_payload') IS NULL AND json_extract(r.payload,'$.request_id') IS NULL)) "
                         "WHERE json_extract(r.payload,'$.submitted_payload') IS NULL AND json_extract(r.payload,'$.request_id') IS NULL AND c.account=? AND c.thread_id=? AND json_extract(c.payload,'$.timestamp')>=? "
                         "AND json_extract(c.payload,'$.timestamp')<? AND date(json_extract(c.payload,'$.timestamp'),'unixepoch','+7 hours')=date(?,'unixepoch','+7 hours') ORDER BY c.rowid DESC LIMIT 12",
                         (
@@ -245,6 +284,13 @@ class OrderIntake:
                             message["timestamp"],
                         ),
                     ).fetchall()
+                from hub.intake_lifecycle import reusable, explicit_addition
+                with self.store.db() as db:
+                    prior = [r for r in prior if reusable(db, r)]
+                # A new addition uses its fresh quantity; old design remains available
+                # through explicit quote/history, never promoted into the new batch.
+                if explicit_addition([m for _, m in batch]):
+                    prior = []
                 context = [(r["id"], json.loads(r["payload"])) for r in prior]
                 context = [
                     (i, m)
@@ -270,6 +316,7 @@ class OrderIntake:
                     "sender": message["sender"],
                     "sender_key": sender_key(message),
                     "first_timestamp": min(m['timestamp'] for _, m in batch),
+                    "last_timestamp": max(m['timestamp'] for _, m in batch),
                 }
                 with self.store.db() as db:
                     db.execute("BEGIN IMMEDIATE")
@@ -312,6 +359,18 @@ class OrderIntake:
                 return True
         return False
 
+    def quiet_now(self, run, payload):
+        latest = float(payload.get('last_timestamp', payload.get('first_timestamp', run.get('created',0))))
+        with self.store.db() as db:
+            rows = db.execute("SELECT payload FROM captures WHERE account=? AND thread_id=? AND json_extract(payload,'$.timestamp')>?",
+                              (run['account'],run['thread_id'],latest)).fetchall()
+        for row in rows:
+            message=json.loads(row[0])
+            if sender_key(message)==payload['sender_key'] and self.accepts(message):
+                # A new source has not yet been incorporated, even if its timer expired.
+                return False
+        return time.time() >= latest + self.engine.intake_management.seconds()
+
     def image_timeout_review(self, run, payload):
         # Claim once before calling Gemini; restarts recover analyzing to review.
         if payload.get('image_timeout_attempted'):
@@ -338,7 +397,7 @@ class OrderIntake:
             self.analyze(run, payload, batch, image_timeout=True)
             with self.store.db() as db:
                 state = db.execute('SELECT state FROM intake_runs WHERE id=?', (run['id'],)).fetchone()[0]
-            if state == 'awaiting_evidence':
+            if state in ('waiting_details','awaiting_evidence','evidence_ready','created','duplicate','ignored','superseded','uncertain','sending'):
                 return True
         except Exception:
             pass  # Do not log credentials or image data.
@@ -347,10 +406,28 @@ class OrderIntake:
         return True
 
     def analyze(self, run, payload, batch, *, image_timeout=False, agent_decision=None):
+        if not self.quiet_now(run, payload):
+            self.state(run['id'], 'waiting_details', {'reason':'Chờ đủ thời gian cấu hình từ tin cuối của đợt khách gửi'})
+            return
         messages = [m for _, m in batch]
+        from hub.intake_lifecycle import reusable
+        with self.store.db() as db:
+            consumed = any(not reusable(db, {'payload': json.dumps(m), 'source_result': '{}'}) for m in messages)
+        if consumed:
+            self.state(run['id'], 'review', {'reason': 'Nguồn tin đã ghi ERP hoặc đang gửi/chưa rõ kết quả; đối soát trước, không tạo lại'})
+            return
         # Reconcile delayed Desktop quote references before any order/context gate.
         from hub.quote_recovery import recover_quotes
         recover_quotes(self.store, messages)
+        from hub.intake_preflight import route
+        if agent_decision is None and route(self, run, messages):
+            return
+        from hub.intake_models import split, forward_placement
+        from hub.order_groups import image_groups
+        if agent_decision is None and split(self, run, payload, batch, image_groups(messages)):
+            return
+        if forward_placement(self, run, messages):
+            return
         if self.additions.handle(run,messages):
             return
         if agent_decision is None:
@@ -408,20 +485,29 @@ class OrderIntake:
             payload['image_groups'] = [[m['message_id'] for _, m in group] for group in groups]
             payload['image_groups_verified'] = True
             payload['print_line_sources'] = line_sources
+        text = "\n".join(m["text"] for m in messages)
+        # Image-only orders wait for supplements before invoking the agent.
+        # A timeout or a verified proposal resumes the same durable run.
+        if (agent_decision is None and not image_timeout
+                and any(m.get('images') or m.get('assets') for m in messages)
+                and not re.search(r'\d', text)
+                and time.time() < max(m['timestamp'] for m in messages) + self.engine.intake_management.seconds()):
+            self.state(run['id'], 'waiting_details', {'reason': 'Chờ theo thời gian cấu hình để bổ sung số lượng; sau đó đọc ảnh tự động'})
+            return
         agent_scope = self.agent_loop.scope(run)
         if agent_decision is None and agent_scope and max(m["timestamp"] for m in messages) >= agent_scope.get("enabled_after", float("inf")):
             if self.agent_loop.run(run, messages):
                 return
-        text = "\n".join(m["text"] for m in messages)
-        if agent_decision is None and not image_timeout and any(m.get('images') or m.get('assets') for m in messages) and not re.search(r'\d', text):
-            self.state(run['id'], 'waiting_details', {'reason': 'Chờ khách bổ sung số lượng'})
-            return
         if not re.search(r"\d|đặt|đơn|in\b|mẫu|làm|lấy|order", key(text)) and not any(
             m["images"] for m in messages
         ):
             self.state(run["id"], "ignored")
             return
-        caption_images = [m for m in messages if image_only_caption_pending(m, text)]
+        # A visual proposal may carry quantity entirely in the image. The legacy
+        # caption marker is not missing media; independent verification below
+        # remains mandatory before this exception can reach ERP.
+        image_proposal = bool(agent_decision and agent_decision.action == 'draft_order' and agent_decision.orders)
+        caption_images = [m for m in messages if image_only_caption_pending(m, text, image_proposal=image_proposal)]
         if len(messages) > 12 or any(
             (m["attachments"] and m not in caption_images)
             or any(a["state"] != "ready" for a in m.get("assets", [])) for m in messages
@@ -442,8 +528,9 @@ class OrderIntake:
             previous = db.execute(
                 "SELECT 1 FROM intake_runs WHERE account=? AND thread_id=? AND id<>? "
                 "AND state NOT IN ('ignored','review','cancelled','waiting_details','superseded') AND created>? "
+                "AND (? IS NULL OR COALESCE(json_extract(payload,'$.model_parent'),'')<>?) "
                 "AND json_extract(payload,'$.sender_key')=? AND date(created,'unixepoch','+7 hours')=date(?,'unixepoch','+7 hours')",
-                (run["account"], run["thread_id"], run["id"], time.time() - 1800, payload["sender_key"], max(m["timestamp"] for m in messages)),
+                (run["account"], run["thread_id"], run["id"], time.time() - self.engine.intake_management.seconds(), payload.get('model_parent'), payload.get('model_parent'), payload["sender_key"], max(m["timestamp"] for m in messages)),
             ).fetchone()
         if previous:
             raise ValueError("Possible continuation or correction of an earlier order")
@@ -618,6 +705,7 @@ class OrderIntake:
             )
 
     def submit(self, run):
+        if not self.engine.intake_management.enabled(run["account"]):return
         # Re-read durable state: stale workers must never replay a completed/uncertain order.
         with self.store.db() as db:
             current = db.execute("SELECT * FROM intake_runs WHERE id=?", (run["id"],)).fetchone()
@@ -629,16 +717,23 @@ class OrderIntake:
             # Reader heartbeat expired: wait for a fresh policy, retaining evidence/idempotency.
             return
         payload = json.loads(run["payload"])
+        if time.time() < payload.get('last_timestamp',run.get('created',0)) + self.engine.intake_management.seconds():
+            return
         try:
             with self.store.db() as db:
                 messages = select_sources(db, run["account"], run["thread_id"], payload["messages"])
                 newer = db.execute(
                     "SELECT payload FROM captures WHERE account=? AND thread_id=? "
                     "AND json_extract(payload,'$.timestamp')>?",
-                    (run['account'], run['thread_id'], max(m['timestamp'] for m in messages)),
+                    (run['account'], run['thread_id'], max(max(m['timestamp'] for m in messages), payload.get('last_timestamp', 0))),
                 ).fetchall()
             if any(sender_key(json.loads(r[0])) == payload['sender_key'] and self.accepts(json.loads(r[0])) for r in newer):
-                self.state(run['id'], 'waiting_details', {'reason': 'Tin mới đến trước lúc ghi ERP; cần tổng hợp lại'})
+                # No ERP write started: discard only derived draft/evidence, keep raw source IDs.
+                for field in ('request_id','orders','image_base64','nas_evidence','image_groups_verified','image_timeout_attempted','image_quantity_verified','print_line_sources'):
+                    payload.pop(field,None)
+                with self.store.db() as db:
+                    db.execute("UPDATE intake_runs SET state='waiting_details',payload=?,result=? WHERE id=? AND state='evidence_ready' AND json_extract(payload,'$.submitted_payload') IS NULL",
+                               (json.dumps(payload,ensure_ascii=False),json.dumps({'reason':'Tin mới đến trước lúc ghi ERP; gom lại và tính lại thời gian chờ'}),run['id']))
                 return
             if not self.engine.settings.erp_write or not allowed(policy, self.engine.settings.inboxes[run["account"]]["channel"], payload["group_name"]) or any(not self.accepts(m) for m in messages):
                 raise ValueError("ERP disabled or policy changed")
@@ -649,6 +744,7 @@ class OrderIntake:
                 if not self.context_gate.check(scoped_run, [m for _, m in group]):
                     self.state(run['id'], 'review', {'reason': 'Image group context needs review'})
                     return
+            self.engine.erp.require_print_position_support(payload)
             binding = self.engine.customer_mappings.get(run["account"], run["thread_id"])
             if binding != payload.get("customer_binding"):
                 raise ValueError("Ánh xạ khách đã thay đổi; cần nhân viên đối chiếu đề xuất cũ")
@@ -670,6 +766,8 @@ class OrderIntake:
             )
         for line in body["orders"]:
             line["ghi_chu_mau_do"] = clean_order_note(line["ghi_chu_mau_do"])
+        if not self.quiet_now(run, payload):
+            return  # Next poll incorporates new sources before any ERP write.
         # Freeze the exact external request for reconciliation before any network write.
         payload["submitted_payload"] = body
         with self.store.db() as db:

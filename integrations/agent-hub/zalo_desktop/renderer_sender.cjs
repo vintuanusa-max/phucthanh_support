@@ -1,4 +1,4 @@
-// Version-pinned adapter. Data arrives as an argument, never as JavaScript source.
+// Capability-checked adapter; unknown contracts fail closed. Data arrives as an argument, never as JavaScript source.
 async function rendererSender(input) {
   const blocked = detail => ({state:'blocked', detail});
   if (!['prepare','send'].includes(input.action)) return blocked('Invalid action');
@@ -6,13 +6,18 @@ async function rendererSender(input) {
   if (typeof input.text !== 'string' || !input.text.trim() || input.text.length > 8000) return blocked('Unsupported text');
   const chunks = globalThis.webpackJsonp;
   if (!Array.isArray(chunks) || !Array.from(document.scripts).some(s =>
-    /\/render\.b7bec208c4c8f73e09f8\.js(?:$|\?)/.test(s.src))) return blocked('Zalo build changed; adapter needs review');
+    /\/render\.[a-f0-9]+\.js(?:$|\?)/.test(s.src))) return blocked('Zalo build changed; adapter needs review');
   const marker='__pt_sender_'+Date.now(); let req;
   const item=[[],{[marker]:(m,e,r)=>{req=r}},[[marker]]];
   try {
     chunks.push(item);
     if (!req?.c?.fBUP || !req.c[13]) return blocked('Renderer modules unavailable');
     const api=req.c.fBUP.exports.default, group=req.c.Gm1y?.exports.default;
+    if (typeof api?.sendZText!=='function' || typeof group?.getGroupByIdSync!=='function' ||
+        typeof group?.getTypeVisibility!=='function' || typeof req.c.DiYL?.exports.a?.getUserId!=='function' ||
+        typeof req.c.GpwQ?.exports.a?.instance!=='function' ||
+        typeof req.c.z0WU?.exports.default?.getGroupIdFromConversationId!=='function' ||
+        typeof req.c.NMlV?.exports.a?.next!=='function') return blocked('Zalo API contract changed; manual review required');
     if (String(req.c.DiYL?.exports.a.getUserId()) !== input.user_id) return blocked('Zalo account changed');
     const info=group?.getGroupByIdSync(input.thread_id);
     if (!info || info.userId !== input.thread_id || info.displayName !== input.display_name)

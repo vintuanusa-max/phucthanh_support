@@ -149,6 +149,7 @@ class Gemini:
             "Chào hỏi đơn giản có thể dùng nguồn built-in:greeting. "
         )
         if context.get("order_intake_only"):
+            system += ' MỖI VỊ TRÍ IN LÀ MỘT DÒNG ERP RIÊNG. Khi đủ căn cứ cùng sản phẩm có N vị trí in: tạo N items, mỗi item có số lượng sản phẩm được in ở vị trí đó, ten_mau/ghi_chu nêu đúng logo và vị trí. Các dòng của cùng sản phẩm dùng cùng print_position_group (khóa ngắn ổn định trong yêu cầu như san_pham_1); mẫu độc lập để null. Ví dụ 600 nón in anfa và Hữu Nghị ở hai vị trí: 2 dòng 600, cùng print_position_group; tổng 1200 lượt in nhưng chỉ 600 nón. Không chia thành 300, không gộp hai vị trí dù cùng mã hàng. Thiếu mã từng vị trí để null/Chờ mã, không suy mã từ logo. Chỉ dùng nhóm khi nguồn/xác nhận chứng minh cùng sản phẩm; ảnh mơ hồ vẫn kiểm tra nội bộ. '
             system = system.replace("có mã hàng và số lượng dương", "có số lượng dương rõ ràng")
             system += (
                 " Đây là bộ phân tích ĐẶT HÀNG, không gửi trả lời cho khách. "
@@ -322,7 +323,15 @@ class ERP:
             if response.json().get("status") != "observed":
                 raise ValueError("ERP group was not resolved")
 
+    def require_print_position_support(self, payload):
+        if any(line.get("print_position_group") for line in payload.get("orders", [])):
+            with httpx.Client(timeout=20, follow_redirects=False) as client:
+                check = client.get(self.settings.erp_url.rstrip("/") + "/api/v1/integrations/zalo/health", headers={"X-Zalo-Token": self.settings.erp_token})
+                check.raise_for_status()
+                if check.json().get("print_position_groups") is not True:
+                    raise ValueError("ERP needs restart/update for grouped print positions; no order sent")
     def create_order(self, payload):
+        self.require_print_position_support(payload)
         if not (self.settings.erp_write and self.settings.erp_url and self.settings.erp_token):
             raise ValueError("ERP writes are not configured/enabled")
         with httpx.Client(timeout=30, follow_redirects=False) as client:

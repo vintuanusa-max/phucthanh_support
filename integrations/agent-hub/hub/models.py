@@ -75,6 +75,7 @@ class Decision(StrictModel):
 
 
 class IntakeOrderLine(OrderLine):
+    print_position_group: str | None = Field(default=None, min_length=1, max_length=100)
     ma_san_pham: str | None = Field(default=None, min_length=1, max_length=200)
 
     @field_validator("ma_san_pham", mode="before")

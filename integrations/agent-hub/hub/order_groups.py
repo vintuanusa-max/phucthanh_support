@@ -11,9 +11,13 @@ def image_groups(messages):
     has_image = has_quantity = False
     for index, message in enumerate(messages, 1):
         quote = message.get('quoted_image') or {}
-        repeats_current = quote.get('resolved') and any(m.get('message_id') == quote.get('message_id') for _, m in current)
+        repeats_current = quote.get('resolved') and any(
+            m.get('message_id') == quote.get('message_id') or
+            (m.get('quoted_image') or {}).get('message_id') == quote.get('message_id') for _, m in current)
         image = bool(message.get('images')) and not repeats_current
-        if image and has_image and has_quantity:
+        from hub.intake_models import placement
+        distinct_quote = quote.get('resolved') and any((m.get('quoted_image') or {}).get('resolved') for _, m in current)
+        if image and has_image and (has_quantity or distinct_quote or placement(message) or any(placement(m) for _, m in current)):
             groups.append(current)
             current = []
             has_image = has_quantity = False

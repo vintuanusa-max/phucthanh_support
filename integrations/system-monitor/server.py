@@ -1,6 +1,7 @@
 """Local read-only status dashboard; never exposes configuration or message bodies."""
-import concurrent.futures,json,os,subprocess,threading,time,urllib.request,secrets,re
+import concurrent.futures,json,os,subprocess,threading,time,urllib.request,secrets,re,psutil
 from pathlib import Path
+from sender_health import sender_status
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 ROOT=Path(os.environ['LOCALAPPDATA'])/'PhucThanh'
 CREATE_NO_WINDOW=0x08000000
@@ -38,12 +39,16 @@ def read_status(name,path,alive,worker=False):
   return card(name,state,text)
  except Exception:return card(name,'bad','Chưa đọc được trạng thái')
 def snapshot():
- script="[Console]::OutputEncoding=[Text.UTF8Encoding]::new(); @(Get-CimInstance Win32_Process | Where-Object {$_.Name -match 'python|Photoshop|Illustrator'} | Select-Object Name,CommandLine) | ConvertTo-Json -Compress"
- try:
-  proc=json.loads(command(['powershell.exe','-NoProfile','-Command',script]).stdout or '[]')
-  if isinstance(proc,dict):proc=[proc]
- except Exception:proc=[]
+ proc=[]
+ for process in psutil.process_iter(['name','cmdline']):
+  try:
+   info=process.info
+   if re.search('python|Photoshop|Illustrator',info.get('name') or '',re.I):
+    proc.append({'Name':info['name'],'CommandLine':' '.join(info.get('cmdline') or [])})
+  except (psutil.NoSuchProcess,psutil.AccessDenied):
+   continue
  def alive(marker):return any(marker.lower() in str(p.get('CommandLine','')).lower() for p in proc)
+ sender=sender_status(ROOT/"ZaloDesktopReader/state/sender",alive("zalo_desktop.sender"))
  cards=[]
  for title,folder in [('Đọc Zalo','ZaloDesktopReader'),('Đọc WhatsApp','WhatsAppDesktopReader'),('Đọc Viber','ViberDesktopReader')]:
   cards.append(read_status(title,ROOT/folder/'state/status.json',alive(folder)))
@@ -69,7 +74,7 @@ print(json.dumps({'queues':{t:[list(r) for r in c.execute('select state,count(*)
   out=command([docker,'exec','phucthanh-chatwoot-hub-1','/app/.venv/bin/python','-c',code])
   data=json.loads(out.stdout);queue=data['queues'];jobs=data['jobs']
  except Exception:cards.append(card('Hàng đợi file','warn','Chưa đọc được thống kê Docker'))
- return dict(updated=time.time(),cards=cards,queues=queue,jobs=jobs)
+ return dict(updated=time.time(),cards=cards,queues=queue,jobs=jobs,zalo_sender=sender)
 def poll():
  global CACHE
  while True:
