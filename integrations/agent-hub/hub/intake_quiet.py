@@ -1,4 +1,10 @@
 """Pure quiet-window grouping; no persistence or ERP writes."""
+
+def human_activity(message):
+    # Origin is assigned by the reader, never inferred from an @mention.
+    return (message.get('origin') in ('customer', 'staff')
+            and bool(message.get('sender', '').strip())
+            and not message.get('recalled') and not message.get('revision'))
 def settled_batch(rows, now, wait_seconds):
     if not rows:return []
     batch=[];last=None

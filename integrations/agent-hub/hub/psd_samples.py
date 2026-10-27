@@ -4,9 +4,16 @@ import json,re,time,hashlib
 def init(e):
  with e.store.db() as d:d.execute("CREATE TABLE IF NOT EXISTS psd_samples(id TEXT PRIMARY KEY,account TEXT,thread_id TEXT,conversation INTEGER,state TEXT,payload TEXT,created REAL)")
 
+def production_request(text):
+ text=text.casefold()
+ return bool(re.search(r'\b(đặt thêm|in thêm|hàng loạt|sản xuất|đặt hàng)\b',text) or
+             (re.search(r'\b(in|đặt|lấy|làm)\b',text) and
+              re.search(r'\d+(?:[.,]\d+)?\s*(?:mét|met|tấm|cái|chiếc|bộ|áo)\b',text)
+              and not re.search(r'\b(in test|test mẫu|in thử|làm mẫu)\b',text)))
+
 def sample_only(messages):
  text=' '.join(m.get('text','') for m in messages).casefold()
- return bool(re.search(r'\b(in test|test mẫu|in thử|làm mẫu)\b',text)) and not re.search(r'\b(đặt thêm|in thêm|hàng loạt|sản xuất|đặt hàng)\b',text)
+ return bool(re.search(r'\b(in test|test mẫu|in thử|làm mẫu)\b',text)) and not any(production_request(m.get('text','')) for m in messages)
 
 def collect(intake,run,messages):
  if not sample_only(messages):return False

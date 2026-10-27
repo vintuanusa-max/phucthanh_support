@@ -62,3 +62,12 @@ Tra cứu: [Tổng quan](../TONG_QUAN_HE_THONG.md).
 - [x] 82 ca giả lập đã đạt; không tạo đơn thật khi thử. Test mới: test_intake_media_routing.py, test_nonorder_questions.py.
 - [x] Hub question-routing-20261027 đã áp dụng; API 8096 OK, gom 10 phút.
 - [ ] Theo dõi độ chính xác ngôn ngữ/ảnh thực tế và số lần đọc ảnh; chưa cam kết 100%.
+
+## 27/10/2026 — Gom tin người thật và AI hiểu câu chốt
+- [x] Đồng hồ gom tin theo nhóm tính cả khách và nhân viên, theo số phút cấu hình kể từ hoạt động cuối trong đợt. Tin bot/hệ thống không kéo dài thời gian. Tin nhân viên chỉ là ngữ cảnh, không tự thành lệnh đặt hàng.
+- [x] Tách yêu cầu lên mẫu và đặt hàng trong cùng đợt thành hồ sơ con với nguồn độc quyền; không để in test làm mất phần đặt sản lượng.
+- [x] Gemini 2.5 Flash đọc hội thoại có vai trò để xác định mẫu, tổng hay đặt thêm, dẫn đúng ID và nguyên văn câu hỏi/câu khách xác nhận. Không còn bắt buộc khách phải dùng một danh sách từ ok/ừ.
+- [x] Nối ảnh theo trích dẫn hoặc một ảnh duy nhất không bị xen trao đổi; đọc/cached định danh ảnh khi cần. Nhiều mẫu, ảnh mơ hồ, lời xác nhận chưa rõ hoặc API lỗi: kiểm tra nội bộ.
+- [x] Code kiểm tra tác giả, nguồn, số lượng, ánh xạ khách và ERP; đối chiếu lại trước ghi. Tổng đã có không tạo thêm; đặt thêm vẫn qua khóa nguồn và quy tắc trạng thái hiện có. Không phát lại nguồn đã tạo/đang gửi/chưa rõ kết quả.
+- [x] Bản triển khai: semantic-confirmation-20261027. 151 ca kiểm thử cách ly đạt; thử8 hội thoại giả qua Gemini thật, chỉnh quy tắc total/new và thử lại2ca đạt. Có1ReadTimeout đã thử lại. Không tạo đơn thật khi thử.
+- [ ] Theo dõi thực tế — Giới hạn: nhiều yêu cầu chưa tách chắc vẫn review; kết quả thử không chứng minh hiểu mọi hội thoại ngoài thực tế.

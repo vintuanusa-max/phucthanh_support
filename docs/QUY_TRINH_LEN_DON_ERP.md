@@ -38,3 +38,12 @@ Chi tiết/lịch sử: [Hai luồng](HAI_LUONG_DON_HANG_VA_FILE_MAU.md), [ánh 
 - Bỏ qua lên đơn không có nghĩa đã giải quyết lỗi thiết kế; tin gốc vẫn ở Chatwoot. Không chạy lại các nguồn đã committed/sending/uncertain.
 
 Kiểm thử: 82 ca giả lập đạt (bộ 28 quy tắc + 26 ảnh/ngữ cảnh + 28 câu hỏi/đặt thêm), không API thật. Các test mới trong commit này độc lập với bộ thử xuất file; chưa đo chi phí hay độ chính xác AI thực tế. Xem INTAKE_ROUTING.md và CHECKLIST_VAN_HANH_HE_THONG.md.
+
+## 27/10/2026 — Gom tin người thật và AI hiểu câu chốt
+- Đồng hồ gom tin theo nhóm tính cả khách và nhân viên, theo số phút cấu hình kể từ hoạt động cuối trong đợt. Tin bot/hệ thống không kéo dài thời gian. Tin nhân viên chỉ là ngữ cảnh, không tự thành lệnh đặt hàng.
+- Tách yêu cầu lên mẫu và đặt hàng trong cùng đợt thành hồ sơ con với nguồn độc quyền; không để in test làm mất phần đặt sản lượng.
+- Gemini 2.5 Flash đọc hội thoại có vai trò để xác định mẫu, tổng hay đặt thêm, dẫn đúng ID và nguyên văn câu hỏi/câu khách xác nhận. Không còn bắt buộc khách phải dùng một danh sách từ ok/ừ.
+- Nối ảnh theo trích dẫn hoặc một ảnh duy nhất không bị xen trao đổi; đọc/cached định danh ảnh khi cần. Nhiều mẫu, ảnh mơ hồ, lời xác nhận chưa rõ hoặc API lỗi: kiểm tra nội bộ.
+- Code kiểm tra tác giả, nguồn, số lượng, ánh xạ khách và ERP; đối chiếu lại trước ghi. Tổng đã có không tạo thêm; đặt thêm vẫn qua khóa nguồn và quy tắc trạng thái hiện có. Không phát lại nguồn đã tạo/đang gửi/chưa rõ kết quả.
+- Bản triển khai: semantic-confirmation-20261027. 151 ca kiểm thử cách ly đạt; thử8 hội thoại giả qua Gemini thật, chỉnh quy tắc total/new và thử lại2ca đạt. Có1ReadTimeout đã thử lại. Không tạo đơn thật khi thử.
+- Giới hạn: nhiều yêu cầu chưa tách chắc vẫn review; kết quả thử không chứng minh hiểu mọi hội thoại ngoài thực tế.

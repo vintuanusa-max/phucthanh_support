@@ -203,7 +203,7 @@ class OrderIntake:
                     "AND json_extract(c.payload,'$.timestamp')>=?",
                     (expired['account'], expired['thread_id'], pending_payload.get('last_timestamp', expired['created'])),
                 ).fetchall()
-            if not any(self.accepts(json.loads(r[0])) for r in supplements):
+            if self.quiet_now(dict(expired), pending_payload) and not any(self.accepts(json.loads(r[0])) for r in supplements):
                 if self.image_timeout_review(dict(expired), pending_payload):
                     return True
                 self.state(expired['id'], 'review', {'reason': 'Đã hết thời gian chờ cấu hình, chưa đủ thông tin'})
@@ -246,19 +246,26 @@ class OrderIntake:
                 # Load the complete customer group stream, not only the first 200 global rows.
                 with self.store.db() as db:
                     stream = db.execute(
-                        "SELECT c.id,c.payload,j.state AS job_state FROM captures c "
+                        "SELECT c.id,c.payload,j.state AS job_state,s.run_id AS source_run FROM captures c "
                         "LEFT JOIN jobs j ON j.id=c.id LEFT JOIN intake_sources s ON s.capture_id=c.id "
-                        "WHERE c.account=? AND c.thread_id=? AND s.capture_id IS NULL "
+                        "WHERE c.account=? AND c.thread_id=? "
                         "AND json_extract(c.payload,'$.timestamp')>=? ORDER BY json_extract(c.payload,'$.timestamp'),c.rowid",
                         (account, message['thread_id'], scope['enabled_after'])).fetchall()
-                candidates = [(r['id'], json.loads(r['payload']), r['job_state']) for r in stream]
-                candidates = [(i,m,st) for i,m,st in candidates
-                              if self.accepts(m)]
+                from hub.intake_quiet import human_activity
+                candidates = []
+                for r in stream:
+                    m = json.loads(r['payload'])
+                    if m['timestamp'] < message['timestamp']:
+                        continue
+                    if r['source_run'] is None and self.accepts(m):
+                        candidates.append((r['id'], m, r['job_state']))
+                    elif human_activity(m) and not self.accepts(m):
+                        candidates.append((None, m, 'done'))
                 from hub.intake_quiet import settled_batch
                 selected = settled_batch(candidates, time.time(), self.engine.intake_management.seconds())
                 if not selected:
                     continue
-                batch = [(i,m) for i,m,_ in selected]
+                batch = [(i,m) for i,m,_ in selected if i is not None]
                 with self.store.db() as db:
                     db.execute(
                         "UPDATE intake_runs SET state='waiting_details',payload=json_remove(payload,'$.request_id','$.orders','$.image_base64','$.nas_evidence','$.image_groups_verified','$.image_timeout_attempted','$.print_line_sources') WHERE account=? AND thread_id=? "
@@ -364,12 +371,16 @@ class OrderIntake:
         with self.store.db() as db:
             rows = db.execute("SELECT payload FROM captures WHERE account=? AND thread_id=? AND json_extract(payload,'$.timestamp')>?",
                               (run['account'],run['thread_id'],latest)).fetchall()
+        from hub.intake_quiet import human_activity
+        activity_latest = latest
         for row in rows:
             message=json.loads(row[0])
+            if human_activity(message):
+                activity_latest = max(activity_latest, float(message['timestamp']))
             if self.accepts(message):
                 # A new source has not yet been incorporated, even if its timer expired.
                 return False
-        return time.time() >= latest + self.engine.intake_management.seconds()
+        return time.time() >= activity_latest + self.engine.intake_management.seconds()
 
     def image_timeout_review(self, run, payload):
         # Claim once before calling Gemini; restarts recover analyzing to review.
@@ -416,9 +427,15 @@ class OrderIntake:
         if consumed:
             self.state(run['id'], 'review', {'reason': 'Nguồn tin đã ghi ERP hoặc đang gửi/chưa rõ kết quả; đối soát trước, không tạo lại'})
             return
+        from hub.conversation_confirmation import apply as apply_quantity_confirmation
+        if apply_quantity_confirmation(self, run, messages):
+            return
         # Reconcile delayed Desktop quote references before any order/context gate.
         from hub.quote_recovery import recover_quotes
         recover_quotes(self.store, messages)
+        from hub.intake_requests import split_requests
+        if agent_decision is None and split_requests(self, run, payload, batch):
+            return
         from hub.psd_samples import collect as collect_psd_sample
         if agent_decision is None and collect_psd_sample(self, run, messages):
             return
@@ -737,6 +754,9 @@ class OrderIntake:
                 with self.store.db() as db:
                     db.execute("UPDATE intake_runs SET state='waiting_details',payload=?,result=? WHERE id=? AND state='evidence_ready' AND json_extract(payload,'$.submitted_payload') IS NULL",
                                (json.dumps(payload,ensure_ascii=False),json.dumps({'reason':'Tin mới đến trước lúc ghi ERP; gom lại và tính lại thời gian chờ'}),run['id']))
+                return
+            from hub.conversation_confirmation import apply as apply_quantity_confirmation
+            if apply_quantity_confirmation(self, run, messages):
                 return
             if not self.engine.settings.erp_write or not allowed(policy, self.engine.settings.inboxes[run["account"]]["channel"], payload["group_name"]) or any(not self.accepts(m) for m in messages):
                 raise ValueError("ERP disabled or policy changed")
