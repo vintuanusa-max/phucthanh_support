@@ -203,8 +203,7 @@ class OrderIntake:
                     "AND json_extract(c.payload,'$.timestamp')>=?",
                     (expired['account'], expired['thread_id'], pending_payload.get('last_timestamp', expired['created'])),
                 ).fetchall()
-            if not any(sender_key(json.loads(r[0])) == pending_payload['sender_key']
-                       and self.accepts(json.loads(r[0])) for r in supplements):
+            if not any(self.accepts(json.loads(r[0])) for r in supplements):
                 if self.image_timeout_review(dict(expired), pending_payload):
                     return True
                 self.state(expired['id'], 'review', {'reason': 'Đã hết thời gian chờ cấu hình, chưa đủ thông tin'})
@@ -240,11 +239,11 @@ class OrderIntake:
                             "INSERT OR IGNORE INTO intake_sources VALUES(?,?)", (identity, "policy_skip")
                         )
                     continue
-                stream_key = (message['thread_id'], sender_key(message))
+                stream_key = message['thread_id']
                 if stream_key in checked_streams:
                     continue
                 checked_streams.add(stream_key)
-                # Load the complete sender/group stream, not only the first 200 global rows.
+                # Load the complete customer group stream, not only the first 200 global rows.
                 with self.store.db() as db:
                     stream = db.execute(
                         "SELECT c.id,c.payload,j.state AS job_state FROM captures c "
@@ -254,7 +253,7 @@ class OrderIntake:
                         (account, message['thread_id'], scope['enabled_after'])).fetchall()
                 candidates = [(r['id'], json.loads(r['payload']), r['job_state']) for r in stream]
                 candidates = [(i,m,st) for i,m,st in candidates
-                              if sender_key(m)==sender_key(message) and self.accepts(m)]
+                              if self.accepts(m)]
                 from hub.intake_quiet import settled_batch
                 selected = settled_batch(candidates, time.time(), self.engine.intake_management.seconds())
                 if not selected:
@@ -264,8 +263,8 @@ class OrderIntake:
                     db.execute(
                         "UPDATE intake_runs SET state='waiting_details',payload=json_remove(payload,'$.request_id','$.orders','$.image_base64','$.nas_evidence','$.image_groups_verified','$.image_timeout_attempted','$.print_line_sources') WHERE account=? AND thread_id=? "
                         "AND state IN ('awaiting_evidence','evidence_ready') "
-                        "AND json_extract(payload,'$.sender_key')=?",
-                        (account, message['thread_id'], sender_key(message)),
+                        "",
+                        (account, message['thread_id']),
                     )
                 # Recover uncommitted image context when text arrives after the settle window.
                 with self.store.db() as db:
@@ -315,6 +314,7 @@ class OrderIntake:
                     "group_name": message["display_name"],
                     "sender": message["sender"],
                     "sender_key": sender_key(message),
+                    "collection_scope": "group",
                     "first_timestamp": min(m['timestamp'] for _, m in batch),
                     "last_timestamp": max(m['timestamp'] for _, m in batch),
                 }
@@ -366,7 +366,7 @@ class OrderIntake:
                               (run['account'],run['thread_id'],latest)).fetchall()
         for row in rows:
             message=json.loads(row[0])
-            if sender_key(message)==payload['sender_key'] and self.accepts(message):
+            if self.accepts(message):
                 # A new source has not yet been incorporated, even if its timer expired.
                 return False
         return time.time() >= latest + self.engine.intake_management.seconds()
@@ -730,7 +730,7 @@ class OrderIntake:
                     "AND json_extract(payload,'$.timestamp')>?",
                     (run['account'], run['thread_id'], max(max(m['timestamp'] for m in messages), payload.get('last_timestamp', 0))),
                 ).fetchall()
-            if any(sender_key(json.loads(r[0])) == payload['sender_key'] and self.accepts(json.loads(r[0])) for r in newer):
+            if any(self.accepts(json.loads(r[0])) for r in newer):
                 # No ERP write started: discard only derived draft/evidence, keep raw source IDs.
                 for field in ('request_id','orders','image_base64','nas_evidence','image_groups_verified','image_timeout_attempted','image_quantity_verified','print_line_sources'):
                     payload.pop(field,None)

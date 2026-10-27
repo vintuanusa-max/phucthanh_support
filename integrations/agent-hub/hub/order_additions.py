@@ -13,6 +13,14 @@ def addition_request(messages):
     if not candidates:return None
     if len(candidates)!=1:raise ValueError('Nhiều yêu cầu đặt thêm trong cùng lượt; cần tách mẫu')
     source=candidates[0];text=key(source['text'])
+    marker=re.search(r'\b(in|đặt|làm|lấy)\s+thêm\b',text)
+    # Separate a completed complaint clause from an explicit new addition.
+    # Keep conditional/negative language governing the addition; never take
+    # historical quantities before the clause as the new quantity.
+    prefix=text[:marker.start()]
+    if re.search(r'[,;.!?]\s*$',prefix):
+        if not re.search(r'\b(nếu|khi|đợi|sau khi|miễn|trừ khi)\b',prefix):
+            text=text[marker.start():]
     if re.search(r'\?|\b(không|chưa|khoan|đừng|hủy|huỷ|nếu|bù)\b',text):
         raise ValueError('Chưa có xác nhận đặt thêm rõ ràng')
     values=piece_quantities(text)

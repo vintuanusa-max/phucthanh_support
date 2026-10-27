@@ -19,3 +19,14 @@ Files: intake_preflight.py, order_intake.py, agent_loop.py. Tables: intake_route
 - [x] Eight SQLite in-memory tests passed; no real ERP test writes, no external model test calls.
 - [x] Image observations remain separate from source consumption ledger.
 - [ ] End-to-end production accuracy remains subject to new-message observation.
+
+
+## 2026-10-27: grouped quiet window and non-order media
+- Group eligible captures by account/thread, regardless of sender; late eligible messages invalidate pending draft/evidence before submission.
+- Exact media duplicate detection only within the same group and confirmed ERP-linked runs; fresh additions bypass suppression. Ambiguous forwards stay review, approvals are ignored by order intake.
+- Narrow text fast path for complaint/progress/quote/delivery/information; mixed requests or unknown sources fall through. Version route-v2-nonorder preserves existing visual cache keys.
+- ContextGate uses complete certain cached observations, retains original vision on cache miss/uncertainty.
+- Parse explicit addition clause after a completed complaint separately from historical quantities; retain conditional/negative/conflicting guards.
+- Offline validation: 82 passing cases in the simulation set, no production writes. Production model accuracy and real token savings remain unmeasured.
+
+Pre-commit verification: clean HEAD plus exactly the staged ERP changes passed 55/55 targeted tests in an offline container. Staged-content secret-pattern scan found no credentials; no runtime config, sessions, DB or image data included.

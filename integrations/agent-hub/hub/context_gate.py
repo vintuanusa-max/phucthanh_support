@@ -180,6 +180,11 @@ class ContextGate:
                     values = m.get('images', [])
                     images.extend(values if values and isinstance(values[0], dict) else self.store.images(values))
                 if len(images) > 2: raise ValueError('Too many context images')
+                from hub.intake_preflight import observations
+                observed=observations(self.engine,run,messages,cache_only=True)
+                if observed and not any(v['observation']['uncertain'] for v in observed):
+                    context['image_observations']=observed
+                    images=[]
                 decision = classify(self.engine.settings, context, images)
             allowed = validate_decision(decision, context)
             with self.store.db() as db:

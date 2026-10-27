@@ -51,3 +51,14 @@ Tra cứu: [Tổng quan](../TONG_QUAN_HE_THONG.md).
 - [x] Không sửa/tạo đơn ERP, không tự chạy lại xuất file, không RIP hoặc gửi khách.
 - Giới hạn: Hub hoặc Chatwoot ngừng hoạt động thì không gửi được cảnh báo tức thì. Khi hoạt động lại sẽ đối chiếu trạng thái còn kẹt. Không phải dịch vụ giám sát độc lập ngoài Hub.
 - Mã: integrations/agent-hub/hub/file_notices.py; được gọi độc lập trong monitor_workflow của app.py. Bảng file_notice_watch và file_notice_meta chỉ phục vụ cảnh báo.
+
+
+## 27/10/2026 — Gom tin, câu hỏi và ảnh ERP
+- [x] Gom theo nhóm, chờ từ tin hợp lệ cuối; người gửi khác cũng reset thời gian.
+- [x] Câu hỏi rõ: fast path chữ, không tạo ERP/đọc ảnh; mixed order không bị loại.
+- [x] Ảnh forward trùng nguồn đơn có ID ERP không tạo lại; ảnh mới không tự bỏ.
+- [x] Cache observation được dùng ở ContextGate; ảnh chưa chắc giữ kiểm chứng.
+- [x] Phân biệt số lượng hàng cũ trong phản ánh và số lượng đặt thêm mới.
+- [x] 82 ca giả lập đã đạt; không tạo đơn thật khi thử. Test mới: test_intake_media_routing.py, test_nonorder_questions.py.
+- [x] Hub question-routing-20261027 đã áp dụng; API 8096 OK, gom 10 phút.
+- [ ] Theo dõi độ chính xác ngôn ngữ/ảnh thực tế và số lần đọc ảnh; chưa cam kết 100%.
