@@ -471,3 +471,6 @@ See KPI-VA-LOI-SAN-XUAT.md. Enabled only new messages in verified Zalo/WhatsApp 
 - Chỉ xóa các image/tag cũ thuộc phucthanh-chatwoot-hub. Không dọn image Chatwoot/PostgreSQL/Redis hoặc ứng dụng khác theo quy tắc này.
 - Tuyệt đối không xóa volume, database, checkpoint, lịch sử chống trùng, file NAS hoặc dữ liệu ERP; không dùng docker system prune --volumes hay compose down -v.
 - Nếu bản mới lỗi: giữ image cũ để khôi phục, chưa dọn. Sau dọn kiểm tra health và báo số bản đã dọn.
+
+## PSD sample-only workflow
+See ../../docs/PSD_SAMPLES.md. psd_samples.py queues sample-only work without ERP writes; psd_worker.py exports original-size CMYK JPG and private preview. Files stay under customer/DESIGNER/model/sample_job; source hashes and local journal prevent duplicate exports.

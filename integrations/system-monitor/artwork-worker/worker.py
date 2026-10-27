@@ -28,6 +28,8 @@ def sync(cfg):
     parsed=urlparse(cfg['hub_url'])
     if parsed.hostname not in ('127.0.0.1','localhost') or parsed.scheme!='http':raise ValueError('Expected local Hub')
     with httpx.Client(base_url=cfg['hub_url'],headers={'Authorization':'Bearer '+cfg['ingest_token']},timeout=65,trust_env=False,follow_redirects=False) as c:
+        from psd_worker import sync_psd
+        psd_state=sync_psd(c,cfg)
         from native_worker import sync_native
         native_state=sync_native(c,cfg)
         from preview_worker import sync_preview

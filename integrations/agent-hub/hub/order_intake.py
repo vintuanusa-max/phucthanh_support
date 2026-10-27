@@ -419,6 +419,9 @@ class OrderIntake:
         # Reconcile delayed Desktop quote references before any order/context gate.
         from hub.quote_recovery import recover_quotes
         recover_quotes(self.store, messages)
+        from hub.psd_samples import collect as collect_psd_sample
+        if agent_decision is None and collect_psd_sample(self, run, messages):
+            return
         from hub.intake_preflight import route
         if agent_decision is None and route(self, run, messages):
             return

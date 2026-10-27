@@ -24,8 +24,14 @@ def listing(e):
    if native_busy:latest={'state':native_busy['state'],'reason':json.loads(native_busy['payload']).get('error','')}
    if not p.get('sources'):continue
    (history if finished else pending).append({'id':r['id'],'title':p.get('brief',{}).get('title',r['id'][:12]),'state':latest.get('state','not_started'),'reason':latest.get('reason',''),'account':r['account'],'created':r['created']})
+ from hub.psd_samples import listing as sample_listing
+ for sample in sample_listing(e):(history if sample['state']=='done' else pending).append(sample)
+ pending.sort(key=lambda x:x['created'],reverse=True)
  return {'pending':pending,'completed':len(history),'history':history,'limit':1000}
 def detail(e,bid):
+ from hub.psd_samples import detail as sample_detail
+ sample=sample_detail(e,bid)
+ if sample:return sample
  with e.store.db() as d:
   r=d.execute('SELECT * FROM design_briefs WHERE id=?',(bid,)).fetchone()
   if not r:raise ValueError('Không tìm thấy hồ sơ')

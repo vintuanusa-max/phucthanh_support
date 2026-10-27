@@ -6,7 +6,7 @@ NON_ORDER = {'payment','delivery','delivery_update','invoice','progress','progre
 
 def reusable(db, row):
     result = json.loads(row['source_result'] or '{}')
-    if result.get('intent') in NON_ORDER or result.get('print_approval_id'):
+    if result.get('intent') in NON_ORDER or result.get('print_approval_id') or result.get('sample_job_id'):
         return False
     m = json.loads(row['payload'])
     args = (m['account'], m['thread_id'], m['message_id'])

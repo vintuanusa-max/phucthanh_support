@@ -364,6 +364,20 @@ def create_app(settings=None, engine=None, start_worker=True):
             raise HTTPException(422, "Invalid order policy") from exc
         return {"stored": True, "scope": engine.order_intake.scope(account)}
 
+    @app.get('/adapters/{account}/psd-samples', dependencies=[Depends(require_ingest)])
+    def pending_psd(account: str):
+        from hub.psd_samples import pending
+        return {'job':pending(engine,account)}
+
+    @app.post('/adapters/{account}/psd-samples/{identity}', dependencies=[Depends(require_ingest)])
+    async def complete_psd(account: str, identity: str, request: Request):
+        from hub.psd_samples import complete
+        content=bytearray()
+        async for chunk in request.stream():
+            content.extend(chunk)
+            if len(content)>8_000_000:raise HTTPException(413,'Preview too large')
+        return complete(engine,account,identity,json.loads(content))
+
     @app.get('/adapters/{account}/jpg-exports', dependencies=[Depends(require_ingest)])
     def pending_jpg(account: str):
         return {'job':engine.artwork_checks.jpg.pending(account)}

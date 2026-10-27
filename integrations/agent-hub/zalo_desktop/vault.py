@@ -166,7 +166,8 @@ class Vault:
             info = json.loads(info_path.read_text(encoding="utf-8"))
         else:
             part = self.home / (key + ".part")
-            info = download(payload["url"], part)
+            limit = 1024 * 1024 * 1024 if str(payload.get("name", "")).lower().endswith(".psd") else 256 * 1024 * 1024
+            info = download(payload["url"], part, max_bytes=limit)
             part.replace(local)
             info_path.write_text(json.dumps(info), encoding="utf-8")
         name = safe_name(payload.get("name") or info["name"])
