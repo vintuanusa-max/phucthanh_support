@@ -37,7 +37,7 @@ def validate(value,context):
     if not isinstance(proofs,list) or len(proofs)!=1:raise ValueError('Đợt xác nhận nhiều mẫu/dòng: cần tách rõ từng mẫu, không gộp số lượng')
     for p in proofs:
         q=sources.get(p.get('question_id'));a=sources.get(p.get('confirmation_id'))
-        if not q or not a or q['role']!='staff' or a['role']!='customer' or a['message_id'] not in batch or not 0<a['timestamp']-q['timestamp']<=3600:
+        if not q or not a or q['role']!='staff' or a['role']!='customer' or a['message_id'] not in batch or not 0<a['timestamp']-q['timestamp']<=(86400 if q['message_id'] in batch else 3600):
             raise ValueError('Bằng chứng xác nhận sai tác giả/ID/thời gian')
         evidence=p.get('evidence',[]);quoted=set()
         for ev in evidence:
@@ -69,6 +69,9 @@ def apply(intake,run,messages):
     seen={}
     for row in rows:
         m=json.loads(row[0]);seen.setdefault(m['message_id'],m)
+    # The collector already reclaimed uncommitted prior sources using reusable().
+    # Keep that complete batch even when the customer answers after one hour.
+    for m in messages:seen.setdefault(m['message_id'],m)
     history=[m for m in seen.values() if m.get('origin') in ('staff','customer') and not m.get('revision') and not m.get('recalled')]
     if not any(m.get('origin')=='staff' for m in history):return False
     def clean(m):return {k:m.get(k) for k in ('message_id','text','timestamp','sender_id','quoted_image')} | {'role':m['origin']}
@@ -84,7 +87,8 @@ def apply(intake,run,messages):
     if not p['model']:
         from hub.confirmation_artwork import resolve
         p.update(resolve(intake,run,question,history,binding))
-    allowed={p['confirmation_id'],p.get('image_source_id')}
+    # The staff question is evidence for this confirmation, not a second order.
+    allowed={p['question_id'],p['confirmation_id'],p.get('image_source_id')}
     if any(m['message_id'] not in allowed for m in messages):
         raise ValueError('Còn nguồn/yêu cầu khác trong đợt xác nhận; cần tách mẫu, không bỏ số lượng')
     if p['mode']!='additional':
