@@ -123,6 +123,7 @@ class Store:
 
     def capture(self, message):
         data = message.model_dump()
+        screenshot = data.pop("conversation_evidence", None)
         key = event_key(message.account, message.thread_id, message.message_id, message.revision)
         media = [(decode_image(i), i["mime_type"]) for i in data.pop("images", [])]
         data["images"] = [event_key(key, hashlib.sha256(raw).hexdigest()) for raw, _ in media]
@@ -136,6 +137,9 @@ class Store:
                 for field in ("text", "attachments", "direction", "recalled", "images", "assets", "quoted_image")
             ):
                 raise ValueError("Same capture ID/revision with different payload")
+            if screenshot:
+                from hub.quote_conversation_evidence import register
+                register(db,data,screenshot)
             for media_id, (raw, mime) in zip(data["images"], media, strict=True):
                 db.execute("INSERT OR IGNORE INTO media VALUES(?,?,?,?)", (media_id, key, mime, raw))
             db.execute(

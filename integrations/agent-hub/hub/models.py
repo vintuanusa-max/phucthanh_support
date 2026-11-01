@@ -37,6 +37,13 @@ class QuotedImage(StrictModel):
     resolved: bool
 
 
+class ConversationEvidence(StrictModel):
+    image: ImageInput
+    source_digest: str = Field(pattern=r'^[a-f0-9]{64}$')
+    quote_id: str = Field(min_length=1,max_length=100)
+    method: Literal['windows-msaa-printwindow-v1']
+
+
 class Capture(StrictModel):
     account: str = Field(min_length=1, max_length=100)
     thread_id: str = Field(min_length=1, max_length=300)
@@ -55,6 +62,7 @@ class Capture(StrictModel):
     revision: int = Field(default=0, ge=0)
     recalled: bool = False
     quoted_image: QuotedImage | None = None
+    conversation_evidence: ConversationEvidence | None = None
 
 
 class OrderLine(StrictModel):

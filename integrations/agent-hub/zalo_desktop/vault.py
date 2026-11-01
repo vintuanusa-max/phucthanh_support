@@ -143,6 +143,10 @@ class Vault:
             elif row[0] != "ready":
                 message["attachments"].append("vault:download-failed")
         message["assets"], message["images"] = assets, images[:1]
+        from .quote_screenshot import capture as capture_quote_screenshot
+        proof = capture_quote_screenshot(self, message)
+        if proof:
+            message["conversation_evidence"] = proof
         return message
 
     def folder(self, payload):
@@ -240,7 +244,7 @@ class Vault:
             with self.db() as db:
                 db.execute(
                     "UPDATE assets SET state=?,error=?,attempts=attempts+1,next_try=? WHERE id=?",
-                    (state, type(exc).__name__, time.time() + 30, row[0]),
+                    (state, 'file_link_expired_or_unavailable' if isinstance(exc,ValueError) and str(exc)=='File link expired, unavailable or requires permission' else type(exc).__name__, time.time() + 30, row[0]),
                 )
         return True
 

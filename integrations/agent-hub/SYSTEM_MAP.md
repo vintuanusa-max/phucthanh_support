@@ -474,3 +474,5 @@ See KPI-VA-LOI-SAN-XUAT.md. Enabled only new messages in verified Zalo/WhatsApp 
 
 ## PSD sample-only workflow
 See ../../docs/PSD_SAMPLES.md. psd_samples.py queues sample-only work without ERP writes; psd_worker.py exports original-size CMYK JPG and private preview. Files stay under customer/DESIGNER/model/sample_job; source hashes and local journal prevent duplicate exports.
+
+2026-11-01: Expired quoted PET image -> native Windows MSAA/PrintWindow conversation evidence, separate from AI/design images. Text-only single-addition fast path retains intake ERP idempotency. See QUOTE_SCREENSHOT_FALLBACK.md for scope, checks and safe-stop limits.

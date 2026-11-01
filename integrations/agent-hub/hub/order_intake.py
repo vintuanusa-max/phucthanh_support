@@ -427,6 +427,9 @@ class OrderIntake:
         if consumed:
             self.state(run['id'], 'review', {'reason': 'Nguồn tin đã ghi ERP hoặc đang gửi/chưa rõ kết quả; đối soát trước, không tạo lại'})
             return
+        from hub.quote_conversation_evidence import try_prepare as prepare_quote_evidence
+        if agent_decision is None and prepare_quote_evidence(self, run, payload, messages):
+            return
         from hub.conversation_confirmation import apply as apply_quantity_confirmation
         if apply_quantity_confirmation(self, run, messages):
             return
@@ -755,6 +758,13 @@ class OrderIntake:
                     db.execute("UPDATE intake_runs SET state='waiting_details',payload=?,result=? WHERE id=? AND state='evidence_ready' AND json_extract(payload,'$.submitted_payload') IS NULL",
                                (json.dumps(payload,ensure_ascii=False),json.dumps({'reason':'Tin mới đến trước lúc ghi ERP; gom lại và tính lại thời gian chờ'}),run['id']))
                 return
+            if payload.get('quote_evidence_order'):
+                from hub.quote_conversation_evidence import load, fingerprint, explicit_extra
+                with self.store.db() as db:
+                    valid = len(messages)==1 and load(db,messages[0]) is not None
+                marker=payload['quote_evidence_order']
+                if not valid or marker.get('source_digest')!=fingerprint(messages[0]) or marker.get('quantity')!=explicit_extra(messages[0]):
+                    raise ValueError('Quoted order evidence changed; reconcile before submit')
             from hub.conversation_confirmation import apply as apply_quantity_confirmation
             if apply_quantity_confirmation(self, run, messages):
                 return
@@ -827,4 +837,3 @@ class OrderIntake:
             "Đã tạo đơn ERP trạng thái Lên mẫu: " + codes + "\nBằng chứng NAS: " + payload["nas_evidence"],
             apply_capture=True,
         )
-

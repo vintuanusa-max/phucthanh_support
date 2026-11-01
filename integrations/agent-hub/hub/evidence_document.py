@@ -52,6 +52,11 @@ def select_sources(db, account, thread, message_ids):
                 if len(quoted)==len(original['images']):
                     message={**message,'quoted_image':{**message['quoted_image'],'resolved':True,'message_id':original['message_id'],'timestamp':original['timestamp'],'sender':original.get('sender','')}}
                     if not images:images=quoted
+        from hub.quote_conversation_evidence import load as load_quote_evidence
+        screenshot = load_quote_evidence(db,message)
+        if screenshot:
+            images.append(screenshot)
+            message={**message,'conversation_screenshot':True}
         result.append({**message, "images": images})
     return sorted(result, key=lambda item: (item["timestamp"], item["message_id"]))
 

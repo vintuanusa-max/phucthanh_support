@@ -256,6 +256,12 @@ class Engine:
             apply_capture=apply_capture,
         )
 
+        from hub.quote_conversation_evidence import load as load_quote_screenshot
+        with self.store.db() as db:
+            screenshot=load_quote_screenshot(db,message)
+        if screenshot:
+            self.effect(key+':quote-screenshot',conversation,'message',{'content':'ẢNH CHỤP HỘI THOẠI ZALO — bằng chứng đặt hàng khi ảnh cũ không tải được; không phải file thiết kế. Tin nguồn: '+message['message_id'],'message_type':'outgoing','private':True,'_images':[screenshot]},apply_capture=apply_capture)
+
     def process_incoming(self, key, message):
         conversation = message["conversation"]["id"]
         mapping = self.store.thread(conversation=conversation)
@@ -556,4 +562,3 @@ class Engine:
             payload["text"],
             apply_capture=quality or cfg.get("human_delivery_enabled") is True,
         )
-
