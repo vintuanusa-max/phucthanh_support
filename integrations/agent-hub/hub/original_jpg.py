@@ -21,7 +21,7 @@ def plan(source,payload,comparison):
  if comparison.get('file_role')!='artwork' or comparison.get('same_design')!='proposed':raise ValueError('Chưa xác định PDF là artwork đúng mẫu')
  if any(x.get('kind')=='conflict' for x in comparison.get('findings',[])):raise ValueError('Nguồn mâu thuẫn: cần kiểm tra trước xuất')
  with f.open(source) as d:
-  if d.needs_pass or not 1<=len(d)<=8:raise ValueError('PDF khóa hoặc số trang vượt giới hạn')
+  if d.needs_pass or len(d)<1:raise ValueError('PDF khóa hoặc số trang vượt giới hạn')
   panels=[]
   for n,page in enumerate(d):
    w,h=page.rect.width,page.rect.height

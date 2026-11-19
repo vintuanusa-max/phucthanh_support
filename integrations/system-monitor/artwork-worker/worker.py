@@ -11,7 +11,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 import httpx
 
-MAX_BYTES=32*1024*1024
+MAX_BYTES=128*1024*1024
 
 def read_asset(root,asset,limit=MAX_BYTES):
     root=Path(root).resolve();relative=Path(asset['relative_path'])
@@ -28,8 +28,6 @@ def sync(cfg):
     parsed=urlparse(cfg['hub_url'])
     if parsed.hostname not in ('127.0.0.1','localhost') or parsed.scheme!='http':raise ValueError('Expected local Hub')
     with httpx.Client(base_url=cfg['hub_url'],headers={'Authorization':'Bearer '+cfg['ingest_token']},timeout=65,trust_env=False,follow_redirects=False) as c:
-        from psd_worker import sync_psd
-        psd_state=sync_psd(c,cfg)
         from native_worker import sync_native
         native_state=sync_native(c,cfg)
         from preview_worker import sync_preview
@@ -54,6 +52,13 @@ def sync(cfg):
                     from native_patterns import inspect
                     data['native_patterns']=inspect(base64.b64decode(data['data']),Path(__file__).parent/'native-inspection'/asset['sha256'])
                 except Exception as exc:data['native_pattern_error']='Native inspection: '+type(exc).__name__
+            if group in ('CANAVI','CANAVI HCM2') and asset['name'].lower().endswith(('.ai','.pdf')) and not data.get('native_patterns',{}).get('objects'):
+                try:
+                    from native_local import inspect as inspect_groups
+                    data['native_groups']=inspect_groups(base64.b64decode(data['data']),asset['name'],Path(__file__).parent/'jpg-native-inspection'/asset['sha256'])
+                    from native_local import inspect_solid_fills
+                    data['native_groups']=inspect_solid_fills(base64.b64decode(data['data']),asset['name'],Path(__file__).parent/'jpg-native-inspection'/asset['sha256'],data['native_groups'])
+                except Exception as exc:data['native_group_error']='Native group inspection: '+type(exc).__name__
             for ref in job.get('reference_assets',[]):
                 try:data['references'][ref['sha256']]=read_asset(cfg['archive']['root'],ref,4*1024*1024)
                 except (OSError,ValueError):pass

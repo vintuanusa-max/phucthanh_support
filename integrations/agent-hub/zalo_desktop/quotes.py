@@ -12,6 +12,8 @@ def attach_quote(message, row, db, secret, enabled):
         quote = json.loads(raw)
         if not isinstance(quote, dict):
             raise ValueError('invalid_quote')
+        if quote.get('cliMsgType') == 46:
+            return attach_file_quote(message,quote,db,secret,enabled)
         if quote.get('cliMsgType') != 32:
             return
         mid = str(quote.get('globalMsgId') or '')
@@ -38,3 +40,28 @@ def attach_quote(message, row, db, secret, enabled):
         message['_asset_requests'] = [{'kind':'image', 'url':url, 'name':''}]
     except (ValueError, TypeError, KeyError):
         message['attachments'].append('zalo-desktop:quoted-image-unresolved')
+
+def attach_file_quote(message, quote, db, secret, enabled):
+    ref=dict(message_id=str(quote.get('globalMsgId') or ''),client_message_id=str(quote.get('cliMsgId') or ''),
+             sender_id=str(quote.get('ownerId') or ''),sender=str(quote.get('fromD') or '')[:300],timestamp=0,
+             resolved=False,name='',error='')
+    message['quoted_file']=ref
+    try:
+        if not enabled or db is None or not ref['message_id'].isdigit():raise ValueError('quote_file_unavailable')
+        original=db.execute('SELECT * FROM message WHERE msgId=?',(ref['message_id'],)).fetchone()
+        if original is None:raise ValueError('quote_file_source_missing')
+        stamp=int(original['serverTime'] or original['sendDttm'] or 0)
+        if (original['msgType']!=19 or original['ev']!=0 or str(original['toUid'])!=message['thread_id']
+            or str(original['fromUid'])!=ref['sender_id'] or str(original['cliMsgId'])!=ref['client_message_id']
+            or stamp!=int(quote.get('ts') or 0) or stamp<=0 or stamp>message['timestamp']*1000):
+            raise ValueError('quote_file_identity_mismatch')
+        metadata=decode_field(original['message'],secret,original['ev'])
+        name=metadata.get('title');url=metadata.get('href')
+        if not isinstance(name,str) or not name.strip() or not isinstance(url,str) or not url.startswith('https://'):
+            raise ValueError('quote_file_metadata_missing')
+        ref.update(name=name[:200],sender=str(original['dName'] or ref['sender'])[:300],timestamp=stamp/1000,resolved=True)
+        requests=message.setdefault('_asset_requests',[])
+        if not any(x.get('url')==url for x in requests):requests.append({'kind':'file','url':url,'name':name})
+    except (ValueError,TypeError,KeyError) as exc:
+        ref['error']=str(exc) if str(exc).startswith('quote_file_') else 'quote_file_invalid'
+        message['attachments'].append('zalo-desktop:quoted-file-unresolved')

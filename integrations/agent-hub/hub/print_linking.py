@@ -10,7 +10,7 @@ def resolve(db):
         if e['customer_id']!=cid:return
         if b and not any(x['id']==b['id'] for x in e['rows']):e['rows'].append(b)
     explicit={r['brief_id']:dict(r) for r in db.execute('SELECT * FROM erp_print_brief_links')}
-    for r in db.execute("SELECT * FROM intake_runs WHERE state='created'"):
+    for r in db.execute("SELECT * FROM intake_runs WHERE state IN ('created','duplicate')"):
         v=json.loads(r['result'] or '{}');p=json.loads(r['payload']);orders=v.get('orders',[]);cid=v.get('customer_id')
         candidates=[b for b in briefs if b['run_id']==r['id'] and b['account']==r['account'] and b['thread_id']==r['thread_id']]
         sources=p.get('print_line_sources',[])
@@ -33,8 +33,8 @@ def resolve(db):
             # Multiple design candidates cannot be assigned from source proximity.
             if len(chosen)==1:add(o['id'],cid,chosen[0])
     slips=[]
-    for r in db.execute("SELECT * FROM production_slip_orders WHERE state='created'"):
-        v=json.loads(r['result'] or '{}');p=json.loads(r['payload']).get('body',{})
+    for r in db.execute("SELECT * FROM production_slip_orders WHERE state IN ('created','duplicate')"):
+        v=json.loads(r['result'] or '{}');p=json.loads(r['payload'] or '{}').get('body',{})
         for o in v.get('orders',[]):
             add(o['id'],v.get('customer_id'))
             slips.append((o['id'],v,p))
@@ -55,4 +55,38 @@ def resolve(db):
     for b in briefs:
         if b['id'] in explicit:
             x=explicit[b['id']];add(x['order_id'],x['customer_id'],b)
+    # Never project the same non-explicit brief onto competing orders.
+    owners={}
+    for oid,entry in result.items():
+        for b in entry['rows']:owners.setdefault(b['id'],set()).add(oid)
+    for entry in result.values():
+        entry['rows']=[b for b in entry['rows'] if len(owners[b['id']])==1]
     return result
+
+
+def persist(db):
+    """Freeze only unique source-backed links; never overwrite a prior assignment."""
+    db.execute('CREATE TABLE IF NOT EXISTS erp_print_brief_links(brief_id TEXT PRIMARY KEY,order_id TEXT NOT NULL,customer_id TEXT NOT NULL,evidence TEXT NOT NULL)')
+    links=resolve(db)
+    owners={}
+    for oid,entry in links.items():
+        for b in entry['rows']:
+            p=json.loads(b['payload'])
+            if p.get('dispatch_archived_at') or p.get('trial_of'):continue
+            owners.setdefault(b['id'],set()).add((oid,entry['customer_id']))
+    for bid,targets in owners.items():
+        if len(targets)!=1:continue
+        oid,cid=next(iter(targets))
+        db.execute('INSERT OR IGNORE INTO erp_print_brief_links VALUES(?,?,?,?)',
+            (bid,oid,cid,json.dumps({'method':'source_lineage_v1','brief_id':bid,'order_id':oid,'customer_id':cid})))
+    return links
+
+
+def sync_links(store):
+    # Print projection failures must never turn an ERP success into a retry.
+    import logging
+    try:
+        with store.db() as db:persist(db)
+    except Exception:
+        logging.getLogger(__name__).exception('Print linkage pending; bridge will retry without creating ERP orders')
+

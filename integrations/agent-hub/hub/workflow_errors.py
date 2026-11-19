@@ -5,6 +5,8 @@ def issue(reason, stage='design'):
     text = normalize(str(reason))
     code, title, action = 'REVIEW_REQUIRED', 'Chưa đủ căn cứ để hoàn tất bước xử lý', 'Đối chiếu tin nguồn, file và thông số trong hồ sơ; ghi rõ thông tin bổ sung.'
     rules = [
+        (('openai','router can nhan vien','ban ve lai chua khop'), 'RASTER_VERIFY_REVIEW', 'Ảnh phục hồi chưa vượt qua kiểm tra chất lượng', 'Đối chiếu chữ, dấu, hình và chi tiết trắng với ảnh gốc. Giữ kết quả đã có; không tự gọi lại lượt vẽ chưa đạt.'),
+        (('hoi file','confirmed_no_design_file','cho phep phuc hoi'), 'RESTORATION_PERMISSION', 'Ảnh cần phục hồi; đang chờ cho phép xử lý', 'Nhân viên hỏi file và khách xác nhận không có, hoặc chủ xưởng cho phép phục hồi đúng ảnh nguồn. Không cần yêu cầu PDF/AI nếu đã duyệt dùng ảnh này.'),
         (('uncertain','reconciliation','publishing'), 'RESULT_UNCERTAIN', 'Chưa xác minh kết quả gửi trước', 'Kiểm tra ghi chú đã có trước khi thực hiện lại; không tự phát lại.'),
         (('busy','rejected by callee','phan mem ban'), 'DESIGN_APP_BUSY', 'Phần mềm thiết kế đang bận', 'Kiểm tra hộp thoại hoặc tác vụ Illustrator/Photoshop, giữ nguyên tài liệu đang mở.'),
         (('hash','source changed','thay doi','khong con khop'), 'SOURCE_CHANGED', 'File nguồn đã thay đổi', 'Đối chiếu phiên bản và tải lại đúng file nguồn trước khi xuất.'),

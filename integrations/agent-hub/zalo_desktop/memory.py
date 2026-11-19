@@ -80,6 +80,8 @@ class MemoryReader:
                     for offset in range(0, size, 1048576):
                         if time.monotonic() >= deadline:
                             return
+                        if hasattr(self,"can_read") and not self.can_read():
+                            raise SnapshotError("key_scan_paused_user_active")
                         n = min(1048576, size - offset)
                         buf, got = C.create_string_buffer(n), C.c_size_t()
                         if not k.ReadProcessMemory(handle, C.c_void_p(base + offset), buf, n, C.byref(got)):
@@ -106,6 +108,21 @@ class MemoryReader:
         chunks = self.chunks()
         try:
             for data in chunks:
+                # Zalo 26.11.10 retains the passphrase PRAGMA rather than the
+                # expanded SQLCipher key literal expected by older builds.
+                # Authenticate a source page before accepting any candidate.
+                for statement in re.finditer(
+                    rb'pragma\s+key\s*=\s*[\x22\x27]([0-9a-fA-F]{32}|[0-9a-fA-F]{64})[\x22\x27]',
+                    data, re.I,
+                ):
+                    secret = statement[1]
+                    for salt, (path, page) in catalog.items():
+                        try:
+                            candidate = PageKey.derive(secret, salt)
+                            candidate.decrypt(page, 1)
+                        except (SnapshotError, ValueError):
+                            continue
+                        return secret
                 for match in pattern.finditer(data):
                     packed = bytes.fromhex(match[1].decode())
                     if packed[32:] not in catalog:

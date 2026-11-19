@@ -67,24 +67,26 @@ class LeaveMonitor:
             rows=d.execute("SELECT payload FROM captures WHERE account=? AND thread_id=? AND json_extract(payload,'$.timestamp')>=? ORDER BY json_extract(payload,'$.timestamp')",(ACCOUNT,THREAD,cfg['enabled_after'])).fetchall()
         ms=[json.loads(r[0]) for r in rows]
         ms=[m for m in ms if not self.e.quality_monitor.bot(m) and not m.get('recalled') and not m.get('revision')]
-        groups,unclear=summarize(ms)
-        for m,reason in unclear:
-            key=event_key('leave-unclear',ACCOUNT,THREAD,m['message_id'])
-            self.e.store.enqueue(key,'notice',{'conversation':mapping['conversation'],'quality_review':True,'text':'NGHỈ PHÉP — CẦN KIỂM TRA\n'+m.get('sender','')+': '+m.get('text','')+'\n'+reason+' Chưa cộng số ngày, chưa trừ KPI.'})
-        for (sid,month),g in groups.items():
-            key=event_key('leave-month',ACCOUNT,THREAD,sid,month)
-            with self.e.store.db() as d:old=d.execute('SELECT fingerprint FROM leave_receipts WHERE id=?',(key,)).fetchone()
-            if g['total']<=1 and not old:continue
-            evidence=[{k:m.get(k) for k in ('message_id','sender','sender_id','timestamp','text','resolved_subject','resolved_date','resolved_slot','review_evidence_ids')} for m in g['messages']]
-            payload={'sender_id':sid,'month':month,'sender':g['sender'],'conversation':mapping['conversation'],'dates':g['dates'],'context':evidence,'shared_request':g['shared']}
-            fp=event_key(payload)
-            if old and old[0]==fp:continue
-            try:
-                s=self.e.settings
-                with httpx.Client(timeout=20) as c:
-                    r=c.post(s.erp_url.rstrip('/')+'/api/v1/quality/leave-ingest',headers={'X-Zalo-Token':s.erp_token},json=payload);r.raise_for_status();result=r.json()
-                with self.e.store.db() as d:d.execute('INSERT OR REPLACE INTO leave_receipts VALUES(?,?,?)',(key,fp,json.dumps(result)))
-                self.e.store.enqueue(key+':'+fp,'notice',{'conversation':mapping['conversation'],'quality_review':True,'text':f"NGHỈ PHÉP — {g['sender']} — {month}\nTổng ngày XIN nghỉ rõ ngày: {g['total']:g}. Đề xuất tối đa 1 điểm/tháng khi vượt 1 ngày; cần xác nhận nghỉ thực tế/ngoại lệ. Phiếu ERP: {result['id']}. Chưa tự trừ KPI."})
-                return True
-            except Exception:return False
-        return False
+        # Preserve each original/revised message for human attendance review.
+        with self.e.store.db() as d:
+            rows=d.execute("SELECT payload FROM captures WHERE account=? AND thread_id=? AND json_extract(payload,'$.timestamp')>=? ORDER BY revision DESC,rowid DESC LIMIT 2001",(ACCOUNT,THREAD,cfg['enabled_after'])).fetchall()
+        latest={}
+        for row in rows:
+            m=json.loads(row[0]);latest.setdefault(m['message_id'],m)
+        all_messages=list(latest.values());items=[]
+        for m in all_messages:
+            if self.e.quality_monitor.bot(m):continue
+            result=parse(m)
+            if not result:continue
+            unclear=result.get('unclear','')
+            if result.get('shared'):unclear='Có thể xin nghỉ cùng hoặc xin hộ; chọn người và kiểm tra ngày.'
+            if m.get('recalled'):unclear='Tin đã thu hồi, không dùng để ghi nghỉ.'
+            elif m.get('revision'):unclear='Tin đã sửa; đối chiếu nguyên văn mới nhất. '+unclear
+            items.append({'message_id':m['message_id'],'sender':m.get('sender',''),'sender_id':m.get('sender_id',''),'timestamp':m['timestamp'],'text':m.get('text',''),'suggested_date':result.get('date'),'suggested_days':None if unclear else .5 if result.get('slot')!='full' else 1,'review_reason':unclear,'recalled':bool(m.get('recalled')),'conversation':mapping['conversation']})
+        payload={'account':ACCOUNT,'thread_id':THREAD,'last_capture':max((m['timestamp'] for m in all_messages),default=None),'items':sorted(items,key=lambda x:x['timestamp'],reverse=True)[:2000],'truncated':len(rows)>2000}
+        try:
+            s=self.e.settings
+            with httpx.Client(timeout=20) as client:
+                response=client.post(s.erp_url.rstrip('/')+'/api/v1/timekeeping/nghi-zalo/snapshot',headers={'X-Zalo-Token':s.erp_token},json=payload);response.raise_for_status()
+            return bool(items)
+        except Exception:return False

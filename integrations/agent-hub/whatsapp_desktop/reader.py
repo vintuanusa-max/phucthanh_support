@@ -59,7 +59,7 @@ def main():
                     if isinstance(meta.get('id'),str) and db.execute('SELECT 1 FROM outbox WHERE id=?',(meta['id'],)).fetchone(): continue
                     message = convert(meta, groups, contacts, bodies, cfg['account'], policy)
                     if not message: continue
-                    if vault and meta.get('type') in ('image','document'):
+                    if vault and meta.get('type') in ('image','document','sticker') and not (meta.get('type')=='sticker' and (meta.get('isAnimated') or meta.get('isLottie'))):
                         try:
                             enrich(message, meta, vault)
                         except Exception as exc:

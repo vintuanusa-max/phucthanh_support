@@ -1,3 +1,4 @@
+from hub.ai_usage import post as usage_post
 from hub.image_quantity_rules import IMAGE_QUANTITY_RULES
 import json
 from pathlib import Path
@@ -149,7 +150,7 @@ class Gemini:
             "Chào hỏi đơn giản có thể dùng nguồn built-in:greeting. "
         )
         if context.get("order_intake_only"):
-            system += ' MỖI VỊ TRÍ IN LÀ MỘT DÒNG ERP RIÊNG. Khi đủ căn cứ cùng sản phẩm có N vị trí in: tạo N items, mỗi item có số lượng sản phẩm được in ở vị trí đó, ten_mau/ghi_chu nêu đúng logo và vị trí. Các dòng của cùng sản phẩm dùng cùng print_position_group (khóa ngắn ổn định trong yêu cầu như san_pham_1); mẫu độc lập để null. Ví dụ 600 nón in anfa và Hữu Nghị ở hai vị trí: 2 dòng 600, cùng print_position_group; tổng 1200 lượt in nhưng chỉ 600 nón. Không chia thành 300, không gộp hai vị trí dù cùng mã hàng. Thiếu mã từng vị trí để null/Chờ mã, không suy mã từ logo. Chỉ dùng nhóm khi nguồn/xác nhận chứng minh cùng sản phẩm; ảnh mơ hồ vẫn kiểm tra nội bộ. '
+            system += ' MỖI VỊ TRÍ IN LÀ MỘT DÒNG ERP RIÊNG. Khi đủ căn cứ cùng sản phẩm có N vị trí in: tạo N items, mỗi item có số lượng sản phẩm được in ở vị trí đó, ten_mau/ghi_chu nêu đúng logo và vị trí. Các dòng của cùng sản phẩm dùng cùng print_position_group (khóa ngắn ổn định trong yêu cầu như san_pham_1); mẫu độc lập để null. Ví dụ 600 nón in anfa và Hữu Nghị ở hai vị trí: 2 dòng 600, cùng print_position_group; tổng 1200 lượt in nhưng chỉ 600 nón. Không chia thành 300, không gộp hai vị trí dù cùng mã hàng. Thiếu mã từng vị trí để JSON null (không điền chuỗi Chờ mã), không suy mã từ logo. Chỉ dùng nhóm khi nguồn/xác nhận chứng minh cùng sản phẩm; ảnh mơ hồ vẫn kiểm tra nội bộ. '
             system = system.replace("có mã hàng và số lượng dương", "có số lượng dương rõ ràng")
             system += (
                 " Đây là bộ phân tích ĐẶT HÀNG, không gửi trả lời cho khách. "
@@ -201,7 +202,7 @@ class Gemini:
             system += IMAGE_QUANTITY_RULES
         url = (
             "https://generativelanguage.googleapis.com/v1beta/models/"
-            + quote(self.settings.gemini_model, safe="")
+            + quote(__import__('hub.execution_models',fromlist=['select']).select(self.settings, 'vision' if images else 'analysis'), safe='')
             + ":generateContent"
         )
         generation = {"temperature": 0.2, "responseMimeType": "application/json"}
@@ -229,8 +230,8 @@ class Gemini:
                 },
             }
         with httpx.Client(timeout=60, follow_redirects=False) as client:
-            response = client.post(
-                url,
+            response = usage_post(
+                client, self.settings, 'intake_decision', url,
                 headers={"x-goog-api-key": self.settings.gemini_key},
                 json={
                     "systemInstruction": {"parts": [{"text": system}]},
@@ -324,10 +325,13 @@ class ERP:
                 raise ValueError("ERP group was not resolved")
 
     def require_print_position_support(self, payload):
-        if any(line.get("print_position_group") for line in payload.get("orders", [])):
+        batch = len(payload.get("orders", [])) > 1 and payload.get("request_id", "").startswith("chatwoot-id:")
+        if batch or any(line.get("print_position_group") for line in payload.get("orders", [])):
             with httpx.Client(timeout=20, follow_redirects=False) as client:
                 check = client.get(self.settings.erp_url.rstrip("/") + "/api/v1/integrations/zalo/health", headers={"X-Zalo-Token": self.settings.erp_token})
                 check.raise_for_status()
+                if batch and check.json().get("batch_product_lines") is not True:
+                    raise ValueError("ERP cần nạp bản gom nhiều sản phẩm trong một đơn")
                 if check.json().get("print_position_groups") is not True:
                     raise ValueError("ERP needs restart/update for grouped print positions; no order sent")
     def create_order(self, payload):

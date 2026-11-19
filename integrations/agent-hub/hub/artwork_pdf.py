@@ -6,7 +6,7 @@ import re
 import subprocess
 from pathlib import Path
 
-MAX_BYTES=32*1024*1024
+MAX_BYTES=256*1024*1024
 
 def command(args,timeout=35):
     p=subprocess.run(args,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=timeout,check=False)

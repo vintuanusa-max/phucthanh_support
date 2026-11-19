@@ -45,15 +45,45 @@ public static class ZaloQuoteCapture {
   var found=nodes.FindAll(n=>n.Depth<11&&n.Name.Contains(Norm(group))&&n.Name.Contains("thành viên")&&n.Box.Width>400);
   if(found.Count!=1)return null;return found[0];
  }
+ static List<Node> GroupRows(List<Node> nodes,string group){
+  string wanted=Norm(group);
+  var rows=nodes.FindAll(n=>n.Name==wanted&&n.Box.Width>0&&n.Box.Height>0);
+  if(rows.Count>0)return rows;
+  // Search highlighting splits a group name into several text spans.
+  foreach(var parent in nodes){
+   if(parent.Box.Width<=0||parent.Box.Height<=0)continue;
+   var parts=nodes.FindAll(n=>n.Parent==parent&&n.Role==41&&n.Name.Length>0&&n.Box.Width>0);
+   if(parts.Count<2)continue;
+   parts.Sort((a,b)=>a.Box.Left.CompareTo(b.Box.Left));
+   if(parts.Exists(n=>Math.Abs(n.Box.Top-parts[0].Box.Top)>3))continue;
+   if(Norm(String.Join(" ",parts.ConvertAll(n=>n.Name).ToArray()))==wanted)rows.Add(parent);
+  }
+  return rows;
+ }
  static void Click(Node n){if(n.Box.Width<1||n.Box.Height<1)throw new Exception("Group not visible");SetCursorPos(n.Box.Left+n.Box.Width/2,n.Box.Top+n.Box.Height/2);mouse_event(2,0,0,0,UIntPtr.Zero);mouse_event(4,0,0,0,UIntPtr.Zero);}
  public static string Capture(string group,string body,string sender,string quoteSender,string clock,string date,string output){
   SetProcessDPIAware();var windows=new List<Process>();foreach(var p in Process.GetProcessesByName("Zalo"))if(p.MainWindowHandle!=IntPtr.Zero&&p.MainWindowTitle=="Zalo")windows.Add(p);
   if(windows.Count!=1)throw new Exception("Expected one Zalo window");IntPtr h=windows[0].MainWindowHandle;
   ShowWindow(h,9);SetForegroundWindow(h);Thread.Sleep(300);var nodes=Read(h);var head=Header(nodes,group);
   if(head==null){
-   var rows=nodes.FindAll(n=>n.Name==Norm(group)&&n.Box.Width>0&&n.Box.Height>0);
-   if(rows.Count==0){var search=nodes.FindAll(n=>n.Name=="Tìm kiếm"&&n.Role==42);if(search.Count!=1)throw new Exception("Search field not unique");search[0].A.set_accValue(search[0].Child,group);Thread.Sleep(800);nodes=Read(h);rows=nodes.FindAll(n=>n.Name==Norm(group)&&n.Box.Width>0&&n.Box.Height>0);}
-   if(rows.Count!=1)throw new Exception("Group selection ambiguous");Click(rows[0]);Thread.Sleep(800);nodes=Read(h);head=Header(nodes,group);
+   // Compact Zalo keeps the covered chat list in MSAA. Leave the active
+   // conversation before clicking rows, otherwise a hidden row hits another chat.
+   var active=nodes.FindAll(n=>n.Depth<11&&n.Name.Contains("thành viên")&&n.Box.Width>400);
+   if(active.Count==1){
+    var back=nodes.FindAll(n=>Under(n,active[0])&&n.Name=="\uEC06"&&n.Role==41&&n.Box.Width>0);
+    if(back.Count==1){Click(back[0]);Thread.Sleep(500);nodes=Read(h);}
+   }
+   var rows=GroupRows(nodes,group);
+   if(rows.Count==0){
+    var search=nodes.FindAll(n=>n.Role==42&&n.Box.Width>0&&nodes.Exists(label=>label.Name=="Tìm kiếm"&&n.Box.Contains(label.Box)));
+    if(search.Count==0 && !nodes.Exists(n=>n.Depth<11&&n.Name.Contains("thành viên")&&n.Box.Width>400)){ RECT bounds;GetWindowRect(h,out bounds);search=nodes.FindAll(n=>n.Role==42&&n.Depth<11&&n.Box.Width>100&&n.Box.Top>=bounds.T&&n.Box.Bottom<bounds.T+130); }
+    if(search.Count!=1)throw new Exception("Search field not unique");
+    search[0].A.set_accValue(search[0].Child,group);Thread.Sleep(800);nodes=Read(h);
+    rows=GroupRows(nodes,group);
+   }
+   if(rows.Count!=1)throw new Exception("Group selection ambiguous");Click(rows[0]);
+   for(int attempt=0;attempt<30;attempt++){Thread.Sleep(250);nodes=Read(h);head=Header(nodes,group);if(head!=null)break;}
+
   }
   if(head==null)throw new Exception("Active group mismatch");
   string target=Norm(body);if(target.Length<20)throw new Exception("Message text too short");
@@ -82,3 +112,5 @@ public static class ZaloQuoteCapture {
   return "verified_group_text_sender_time_quote";
  }
 }
+
+

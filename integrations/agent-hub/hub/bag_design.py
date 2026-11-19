@@ -6,6 +6,7 @@ from hub.models import StrictModel
 
 FIELDS={'design_code','construction','has_bottom','print_faces','fabric_scope','split_axis','split_confirmed',
  'finished_height_cm','finished_width_cm','gusset_cm','bottom_cm','fabric_height_cm','fabric_width_cm',
+ 'artwork_height_cm','artwork_width_cm','print_technique','mixed_technique','sublimation_elements','screen_print_elements','pet_elements',
  'mouth_allowance_cm','top_offset_finished_cm','top_offset_reference','right_offset_cm','left_offset_cm',
  'front_print','back_print','gusset_print','bottom_print','handle_print','handle_template_code','handle_roll_width_cm',
  'source_artwork','source_maket','source_slip','output_format','color_profile','mirror','bleed_cm','shrink_compensation','approval_version'}
@@ -36,7 +37,9 @@ class BagPanel(StrictModel):
     artwork_source_message_ids: list[str] = Field(default_factory=list,max_length=10)
     placements: list[BagPlacement] = Field(default_factory=list,max_length=12)
 
-BAG_PROMPT='''Nếu là in túi, thêm bag_facts, mỗi field/value có source_message_ids và evidence.
+FABRIC_AXIS_POLICY='Quy tắc chủ xưởng 08/11/2026 (cập nhật 18/11/2026) về chiều vải/artboard: ưu tiên chiều cao/ngang đã ghi rõ trên nguồn hoặc được chủ xưởng xác nhận. Khi cặp kích thước vải chưa xác định chiều, đọc ảnh maket và kích thước túi thành phẩm (Cao/Ngang) để đối chiếu: với túi 1 mặt/tấm rời (single_face / separate_panel, cả 2 chiều < 70 cm) nếu Ngang thành phẩm > Cao thành phẩm (túi ngang, ví dụ Cao 35 Ngang 45, KT VẢI 40 X 50), dùng số lớn hơn làm chiều ngang (width_cm) và số nhỏ hơn làm chiều cao (height_cm); ngược lại (túi đứng hoặc vải nối 2 mặt >= 70 cm) dùng số lớn hơn làm chiều cao (height_cm), số nhỏ hơn làm chiều ngang (width_cm); áp dụng cả khi thứ tự A x B đảo ngược. Ghi rõ căn cứ maket/thành phẩm và việc áp dụng quy tắc chủ xưởng, không ghi như khách đã ghi nhãn cao/ngang. Không áp nếu thiếu/mờ số đo, thiếu maket đúng mẫu hoặc có chỉ dẫn cao/ngang mâu thuẫn. Chỉ xác định trục, không suy số mặt, tự chia vải, xoay artwork hay thay kích thước artwork; các quy tắc chia/co vải hiện có áp sau khi xác định trục.'
+
+BAG_PROMPT=FABRIC_AXIS_POLICY+'\n'+'''Nếu là in túi, thêm bag_facts, mỗi field/value có source_message_ids và evidence.
 Các field được phép: '''+', '.join(sorted(FIELDS))+'''.
 Đơn vị kích thước cm, value số thập phân khi rõ; boolean dùng true/false; chưa rõ bỏ field.
 Đọc phiếu lệnh + maket + file như các nguồn khác nhau; source_artwork/maket/slip là mô tả nguồn, không bịa đường dẫn.
@@ -50,6 +53,7 @@ Quai cần mã mẫu quai khách cung cấp; chỉ đặt handle_roll_width_cm=1
 File PDF/AI có sẵn không đồng nghĩa đã đúng artboard. Không tự sửa, chia đôi, co giãn, mirror hay suy phần cộng đường may/co vải.
 bag_panels tách front/back/gusset/bottom/handles; mỗi panel có file nguồn và placements riêng cho từng logo/chữ/ảnh. source_message_ids của panel phải có nguồn thật. Kích thước chưa biết để null. Không tự quy đổi mép thành phẩm sang mép vải trừ cữ top finished_mouth + mouth_allowance đã rõ.
 Thông tin đọc từ ảnh có basis=image và evidence mô tả ô/nhãn; luôn chờ nhân viên xác minh. Có mâu thuẫn thì ghi conflicts, không tự chọn.
+Phân biệt rõ kích thước hình vẽ (artwork_height_cm, artwork_width_cm) với cữ in/khoảng cách từ mép túi (top_offset_finished_cm). Tuyệt đối KHÔNG lấy chiều cao hình vẽ (ví dụ: nhãn 16cm trên maket) làm cữ trên. Nếu mảng in/logo chạm sát miệng túi hoặc chạm mép trên thành phẩm thì top_offset_finished_cm = 0.
 '''
 
 def bag_plan(facts, panels=None):
@@ -71,7 +75,19 @@ def bag_plan(facts, panels=None):
     for f in ['fabric_height_cm','fabric_width_cm','fabric_scope','has_bottom','print_faces','source_artwork','source_maket','source_slip']:
         if not values.get(f) or values[f]=='unknown':missing.append(f)
     h,w=num('fabric_height_cm'),num('fabric_width_cm')
+    fw,fh=num('finished_width_cm'),num('finished_height_cm')
     if h and w and not conflicts:
+        if values.get('fabric_scope')=='single_face' and fw and fh and fw>fh and max(w,h)<70:
+            if h > w:
+                w, h = h, w
+                derived['axis_normalized'] = True
+                values['fabric_height_cm'] = str(h)
+                values['fabric_width_cm'] = str(w)
+        elif w > h:
+            w, h = h, w
+            derived['axis_normalized'] = True
+            values['fabric_height_cm'] = str(h)
+            values['fabric_width_cm'] = str(w)
         if values.get('fabric_scope')=='single_face':derived['artboard_candidate_cm']={'height':float(h),'width':float(w),'rule':'keep_explicit_single_face_fabric_size'}
         elif values.get('fabric_scope')=='two_faces':
             if values.get('split_confirmed')=='true' and values.get('split_axis') in ('height','width'):

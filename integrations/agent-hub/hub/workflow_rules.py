@@ -2,6 +2,7 @@
 import re
 import unicodedata
 
+
 def normalize(text):
     return ''.join(c for c in unicodedata.normalize('NFD', text.lower()) if unicodedata.category(c) != 'Mn').replace('đ','d')
 
@@ -17,16 +18,31 @@ def pet_profile(brief):
             'height_cap_cm': 6.5 if hat else None, 'shrink_cm': [0,0],
             'white_contract_px': 0, 'color_contract_px': 1, 'version': 1}
 
-def jpg_size(width, height, basis, kind):
-    if kind == 'meter_fabric':
-        if basis != 'explicit_output' or abs(width-160) > .01:
-            raise ValueError('Vải mét cần khổ xuất ngang 160 và cao có căn cứ')
-        return width, height
-    if basis == 'raw_fabric':
-        return width-2, height-(5 if height >= 70 else 2.5)
-    if basis != 'explicit_output':
-        raise ValueError('Chưa rõ khổ trước/sau co')
-    return width, height
+def jpg_size(
+    width: float,
+    height: float,
+    basis: str,
+    kind: str,
+    product_type: str = "bag",
+    material: str = "canvas",
+    shrink_compensation: float = 0.0,
+) -> tuple[float, float]:
+    """Tính kích thước Artboard xuất file JPG, ủy quyền sang hub.shrinkage_config.
+
+    Giữ tương thích ngược 100% với chữ ký 4 tham số cũ, đồng thời hỗ trợ tra cứu
+    theo loại sản phẩm, chất liệu và bù trừ co rút theo Requirement R3.
+    """
+    from hub.shrinkage_config import calculate_artboard_size
+    return calculate_artboard_size(
+        width=width,
+        height=height,
+        basis=basis,
+        kind=kind,
+        product_type=product_type,
+        material=material,
+        shrink_compensation=shrink_compensation,
+    )
+
 
 
 def hat_face_policy(face, profile):

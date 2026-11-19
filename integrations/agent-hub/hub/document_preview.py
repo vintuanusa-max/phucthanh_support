@@ -20,8 +20,8 @@ def render_asset(root, asset):
         raise ValueError("File preview outside NAS archive")
     if path.suffix.lower() not in (".pdf", ".ai") or asset.get("state") != "ready":
         raise ValueError("File preview requires a ready PDF/AI")
-    if path.stat().st_size > 32_000_000:
-        raise ValueError("File preview exceeds 32 MB")
+    if path.stat().st_size > 128 * 1024 * 1024:
+        raise ValueError("File preview exceeds 128 MiB")
     raw = path.read_bytes()
     if hashlib.sha256(raw).hexdigest() != asset["sha256"]:
         raise ValueError("File preview source hash changed")
@@ -53,6 +53,9 @@ def enrich(messages, root):
     for message in result:
         seen = set()
         for asset in message.get("assets", []):
+            if asset.get('state')!='ready':
+                from hub.quoted_files import verified_reference_only
+                if verified_reference_only(message):continue  # Render the explicit missing-file reference, not a fake PDF preview.
             if Path(asset.get("name", "")).suffix.lower() not in (".pdf", ".ai"):
                 continue
             identity = asset.get("sha256") or asset.get("id")

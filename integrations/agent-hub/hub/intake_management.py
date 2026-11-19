@@ -11,34 +11,40 @@ class IntakeManagement:
  def enabled(self,account):
   channel=self.e.settings.inboxes.get(account,{}).get('channel','')
   # Before ERP feature installation retain existing behavior; afterwards fail closed on stale config.
-  if self.config['revision'] and time.time()-self.confirmed>120:return False
+  # Hub local configuration is authoritative; no ERP session dependency.
   return self.config['channels'].get(channel,False)
  def seconds(self):return self.config['wait_minutes']*60
  def poll(self):
-  if time.time()-self.last<20:return
-  self.last=time.time();s=self.e.settings
-  if not s.erp_url or not s.erp_token:return
-  try:
-   with httpx.Client(timeout=5,trust_env=False,follow_redirects=False,headers={'X-Zalo-Token':s.erp_token}) as c:
-    url=s.erp_url.rstrip('/')+'/api/v1/integrations/zalo/hub-intake'
-    r=c.get(url+'/settings');r.raise_for_status();v=r.json()
-    if type(v['revision']) is not int or v['revision']<1 or type(v['wait_minutes']) is not int or not 1<=v['wait_minutes']<=120 or set(v['channels'])!=set(DEFAULT['channels']) or any(type(x) is not bool for x in v['channels'].values()):raise ValueError('Invalid intake settings')
-    if v['revision']<self.config['revision']:raise ValueError('Stale revision')
-    with self.e.store.db() as d:d.execute('INSERT OR REPLACE INTO intake_management VALUES(1,?)',(json.dumps(v),))
-    self.config=v;self.confirmed=time.time()
-    c.post(url+'/snapshot',json=self.snapshot()).raise_for_status()
-  except (httpx.HTTPError,ValueError,KeyError,TypeError):pass
+  return
+ def update(self,v):
+  if set(v)!={'revision','wait_minutes','channels'} or type(v['revision']) is not int or type(v['wait_minutes']) is not int or not 1<=v['wait_minutes']<=120 or set(v['channels'])!=set(DEFAULT['channels']) or any(type(x) is not bool for x in v['channels'].values()):raise ValueError('Cấu hình không hợp lệ')
+  with self.e.lock,self.e.store.db() as d:
+   d.execute('BEGIN IMMEDIATE')
+   row=d.execute('SELECT payload FROM intake_management WHERE id=1').fetchone()
+   old=json.loads(row[0]) if row else dict(DEFAULT)
+   if v['revision']!=old['revision']:raise ValueError('Cấu hình đã thay đổi; tải lại trước khi lưu')
+   data=dict(v,revision=old['revision']+1)
+   d.execute('CREATE TABLE IF NOT EXISTS intake_management_audit(created REAL,payload TEXT)')
+   d.execute('INSERT INTO intake_management_audit VALUES(?,?)',(time.time(),json.dumps(data)))
+   d.execute('INSERT OR REPLACE INTO intake_management VALUES(1,?)',(json.dumps(data),))
+   self.config=data
+  return {'settings':data}
  def snapshot(self):
+  from datetime import datetime,timedelta,timezone
+  cutoff=(datetime.now(timezone(timedelta(hours=7))).replace(hour=0,minute=0,second=0,microsecond=0)-timedelta(days=6)).timestamp()
   items=[];counts={}
   with self.e.store.db() as d:
-   for row in d.execute('SELECT state,count(*) AS n FROM intake_runs GROUP BY state'):counts[row['state']]=row['n']
-   for r in d.execute('SELECT * FROM intake_runs ORDER BY created DESC LIMIT 120'):
+   for row in d.execute('SELECT state,count(*) AS n FROM intake_runs WHERE created>=? GROUP BY state',(cutoff,)):counts[row['state']]=row['n']
+   for r in d.execute('SELECT * FROM intake_runs WHERE created>=? ORDER BY created DESC',(cutoff,)):
     p=json.loads(r['payload']);res=json.loads(r['result'] or '{}')
     from hub.intake_intent import presentation, evidence
     display,explanation=presentation(d,r,p,res)
     source=evidence(d,r,p); has_image=any(m.get('images') for m in source)
-    items.append({'display_group':display,'classification_reason':explanation,'id':r['id'],'kind':'Tin + ảnh' if has_image else 'Tin chữ','account':r['account'],'group':p.get('group_name',r['thread_id']),'state':r['state'],'created':r['created'],'reason':str(res.get('reason',''))[:600],'orders':[{'id':o.get('id'),'code':o.get('ma_don_hang','')} for o in res.get('orders',[])],'paused':not self.enabled(r['account'])})
-   for r in d.execute("SELECT o.*,s.account,s.thread_id,COALESCE((SELECT json_extract(c.payload,'$.timestamp') FROM captures c WHERE c.account=s.account AND c.thread_id=s.thread_id AND c.message_id=s.message_id LIMIT 1),0) AS created FROM production_slip_orders o JOIN production_slips s ON s.id=o.id ORDER BY s.rowid DESC LIMIT 80"):
+    from hub.intake_diagnostics import describe
+    diagnostics=describe(r,p,res,source,self.seconds())
+    items.append({'display_group':display,'classification_reason':explanation,'id':r['id'],'thread_id':r['thread_id'],'first_timestamp':p.get('first_timestamp',r['created']),'last_timestamp':p.get('last_timestamp',r['created']),'kind':'Tin + ảnh' if has_image else 'Tin chữ','account':r['account'],'group':p.get('group_name',r['thread_id']),'state':r['state'],'created':r['created'],'reason':str(res.get('reason',''))[:600],'orders':[{'id':o.get('id'),'code':o.get('ma_don_hang','')} for o in res.get('orders',[])],'paused':not self.enabled(r['account']),'diagnostics':diagnostics})
+   for r in d.execute("SELECT o.*,s.account,s.thread_id,COALESCE((SELECT json_extract(c.payload,'$.timestamp') FROM captures c WHERE c.account=s.account AND c.thread_id=s.thread_id AND c.message_id=s.message_id LIMIT 1),0) AS created FROM production_slip_orders o JOIN production_slips s ON s.id=o.id WHERE COALESCE((SELECT json_extract(c.payload,'$.timestamp') FROM captures c WHERE c.account=s.account AND c.thread_id=s.thread_id AND c.message_id=s.message_id LIMIT 1),0)>=? ORDER BY s.rowid DESC",(cutoff,)):
     p=json.loads(r['payload']);res=json.loads(r['result'] or '{}');counts['slip:'+r['state']]=counts.get('slip:'+r['state'],0)+1
     items.append({'id':r['id'],'kind':'Phiếu lệnh','account':r['account'],'group':p.get('body',{}).get('group_name',r['thread_id']),'state':r['state'],'created':r['created'],'reason':str(res.get('reason',p.get('reason','')))[:600],'orders':[{'id':o.get('id'),'code':o.get('ma_don_hang','')} for o in res.get('orders',[])],'paused':not self.enabled(r['account'])})
-  return {'revision':self.config['revision'],'items':sorted(items,key=lambda x:x['created'],reverse=True)[:200],'counts':counts}
+  from hub.intake_batches import grouped
+  return {'revision':self.config['revision'],'items':grouped(items,self.seconds()),'counts':counts}

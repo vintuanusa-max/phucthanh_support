@@ -134,7 +134,7 @@ class Store:
             if existing and any(
                 json.loads(existing[0]).get(field, [] if field in {"images", "assets"} else None)
                 != data.get(field)
-                for field in ("text", "attachments", "direction", "recalled", "images", "assets", "quoted_image")
+                for field in ("text", "attachments", "direction", "recalled", "images", "assets", "quoted_image", "quoted_file")
             ):
                 raise ValueError("Same capture ID/revision with different payload")
             if screenshot:

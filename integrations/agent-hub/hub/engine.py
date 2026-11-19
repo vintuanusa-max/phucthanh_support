@@ -43,6 +43,8 @@ class Engine:
         self.file_previews = FilePreviews(self)
 
     def effect(self, key, conversation, kind, payload, *, apply_capture=False):
+        if not conversation or (isinstance(conversation, (int, str)) and str(conversation).lstrip("-").isdigit() and int(conversation) <= 0):
+            return {"id": 0, "local_only": True}
         review = self.settings.mode == "review" and not apply_capture
         with self.store.db() as db:
             old = db.execute("SELECT * FROM effects WHERE id=?", (key,)).fetchone()
@@ -178,7 +180,7 @@ class Engine:
         self.store.expire_deliveries()
         job = self.store.claim()
         if not job:
-            return self.quality_monitor.poll() or self.leave_monitor.poll() or self.production_slips.poll() or self.slip_orders.poll() or self.order_intake.poll() or self.print_approvals.poll()
+            return self.quality_monitor.poll() or self.leave_monitor.poll() or self.order_intake.poll() or self.print_approvals.poll()
         try:
             payload = json.loads(job["payload"])
             getattr(self, "process_" + job["kind"])(job["id"], payload)
@@ -209,6 +211,9 @@ class Engine:
             mapping = self.store.thread(conversation=conversation)
         conversation = mapping["conversation"]
         text = message["text"]
+        if message.get('quoted_file'):
+            from hub.quoted_files import description
+            text += '\n'+description(message['quoted_file'])
         if message["sender"] and message["direction"] == "incoming":
             text = message["sender"] + ": " + text
         if message["attachments"]:
@@ -250,6 +255,7 @@ class Engine:
                         "has_unsupported_media": bool(message["attachments"]),
                         "source_timestamp": message["timestamp"],
                         "assets": message.get("assets", []),
+                        "quoted_file": message.get('quoted_file'),
                     }
                 },
             },
@@ -562,3 +568,4 @@ class Engine:
             payload["text"],
             apply_capture=quality or cfg.get("human_delivery_enabled") is True,
         )
+

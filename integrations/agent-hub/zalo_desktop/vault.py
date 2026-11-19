@@ -83,6 +83,7 @@ class Vault:
             payload = {
                 **item,
                 **({'quoted_image': message['quoted_image']} if message.get('quoted_image') else {}),
+                **({'quoted_file': message['quoted_file']} if message.get('quoted_file') else {}),
                 **{
                     k: message[k]
                     for k in (
@@ -142,6 +143,12 @@ class Vault:
                     message["attachments"].append("vault:preview-unavailable")
             elif row[0] != "ready":
                 message["attachments"].append("vault:download-failed")
+        from .drive_assets import expand_drive_assets
+        for parent in list(assets):
+            try:
+                assets.extend(expand_drive_assets(self.root, parent, message))
+            except (OSError, ValueError, KeyError):
+                message['attachments'].append('vault:drive-children-need-review')
         message["assets"], message["images"] = assets, images[:1]
         from .quote_screenshot import capture as capture_quote_screenshot
         proof = capture_quote_screenshot(self, message)
@@ -171,7 +178,7 @@ class Vault:
         else:
             part = self.home / (key + ".part")
             limit = 1024 * 1024 * 1024 if str(payload.get("name", "")).lower().endswith(".psd") else 256 * 1024 * 1024
-            info = download(payload["url"], part, max_bytes=limit)
+            info = download(payload["url"], part, max_bytes=limit, max_seconds=600 if str(payload.get("name", "")).lower().endswith(".psd") else 120)
             part.replace(local)
             info_path.write_text(json.dumps(info), encoding="utf-8")
         name = safe_name(payload.get("name") or info["name"])

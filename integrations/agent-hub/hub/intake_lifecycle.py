@@ -12,6 +12,8 @@ def reusable(db, row):
     args = (m['account'], m['thread_id'], m['message_id'])
     if db.execute('SELECT 1 FROM order_source_links WHERE account=? AND thread_id=? AND message_id=?', args).fetchone():
         return False
+    if db.execute("SELECT 1 FROM sqlite_master WHERE name='production_slip_orders'").fetchone():
+        if db.execute("SELECT 1 FROM production_slips s JOIN production_slip_orders o ON o.id=s.id WHERE s.account=? AND s.thread_id=? AND s.message_id=? AND o.state IN ('created','done','duplicate','sending','uncertain')",args).fetchone():return False
     # Check stable channel message ID, not only capture ID: revisions are not new orders.
     return not db.execute("SELECT 1 FROM intake_runs r, json_each(r.payload,'$.messages') j WHERE r.account=? AND r.thread_id=? AND j.value=? AND (r.state IN ('created','duplicate','sending','uncertain') OR json_extract(r.payload,'$.submitted_payload') IS NOT NULL OR json_extract(r.result,'$.orders[0].id') IS NOT NULL)", args).fetchone()
 

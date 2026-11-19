@@ -2,6 +2,8 @@
 
 import json
 import time
+import os
+from pathlib import Path
 
 
 class CustomerMappings:
@@ -19,6 +21,17 @@ class CustomerMappings:
             """)
 
     def get(self, account, thread_id):
+        path=os.environ.get('GROUP_CUSTOMER_MAPPING_FILE')
+        if path:
+            from hub.mapping_file import read_config
+            default,rows=read_config(path) # Invalid/missing file fails closed.
+            target=rows.get((account,thread_id),default)
+            with self.store.db() as db:
+                old=db.execute('SELECT * FROM customer_mappings WHERE account=? AND thread_id=?',(account,thread_id)).fetchone()
+                exists=db.execute('SELECT 1 FROM threads WHERE account=? AND thread_id=?',(account,thread_id)).fetchone()
+            if not exists:return None
+            if not old or old['customer_id']!=target['customer_id'] or old['customer_name']!=target['customer_name']:
+                return self.set(account,thread_id,target['customer_id'],target['customer_name'],old['version'] if old else 0)
         with self.store.db() as db:
             row = db.execute(
                 "SELECT * FROM customer_mappings WHERE account=? AND thread_id=?", (account, thread_id)

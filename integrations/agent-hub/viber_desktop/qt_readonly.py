@@ -4,7 +4,9 @@ from pathlib import Path
 P=C.c_void_p
 class QtSql:
  def __init__(self):
-  self.root=Path(os.environ['LOCALAPPDATA'])/'Viber';self.directory=os.add_dll_directory(str(self.root));self.core=C.CDLL(str(self.root/'Qt6Core.dll'));self.sql=C.CDLL(str(self.root/'Qt6Sql.dll'));self.keep=[]
+  from .runtime import installation,signature
+  self.root=installation();self.version_signature=signature(self.root)
+  self.directory=os.add_dll_directory(str(self.root));self.core=C.CDLL(str(self.root/'Qt6Core.dll'));self.sql=C.CDLL(str(self.root/'Qt6Sql.dll'));self.keep=[]
   self.argc=C.c_int(1);self.argv=(C.c_char_p*2)(b'PhucThanhViberReadOnly',None);self.app=C.create_string_buffer(4096)
   self.fn(self.core,'??0QCoreApplication@@QEAA@AEAHPEAPEADH@Z',None,[P,P,P,C.c_int])(self.app,C.byref(self.argc),self.argv,0x060b02)
   self.fn(self.core,'?addLibraryPath@QCoreApplication@@SAXAEBVQString@@@Z',None,[P])(self.string(str(self.root/'plugins')))

@@ -17,6 +17,10 @@ def sample_only(messages):
 
 def collect(intake,run,messages):
  if not sample_only(messages):return False
+ from hub.group_original_jpg import enabled
+ if enabled(run['thread_id']):
+  intake.state(run['id'],'ignored',{'intent':'sample_request','reason':'Lên mẫu JPG: hàng đợi file độc lập xử lý sau thời gian gom tin; không tạo ERP'})
+  return True
  e=intake.engine;init(e)
  text=' '.join(m.get('text','') for m in messages)
  codes=re.findall(r'\b[a-zA-Z]+\d+[a-zA-Z0-9_-]*\b',text.casefold())
@@ -30,16 +34,46 @@ def collect(intake,run,messages):
    if a.get('name','').lower().endswith('.psd') and any(re.search(r'(?<![a-z0-9])'+re.escape(code)+r'(?![a-z0-9])',a['name'].casefold()) for code in codes):candidates[a['id']]=a
  # Non-PSD sample requests keep the existing design handling; no arbitrary nearest file.
  # Sample-only requests stay outside ERP even while the PSD is missing.
- identity=hashlib.sha256(('psd-sample:'+run['account']+run['thread_id']+':'.join(m['message_id'] for m in messages)).encode()).hexdigest()
+ identity=hashlib.sha256(('psd-sample:'+run['account']+run['thread_id']+':'.join(sorted(m['message_id'] for m in messages))).encode()).hexdigest()
  asset=next(iter(candidates.values())) if len(candidates)==1 else None
  payload={'title':'Lên mẫu — '+(asset['name'] if asset else 'PSD cần chọn nguồn'),'request':text,'messages':[m['message_id'] for m in messages],'asset':asset,'sample_only':True,'policy':'original_psd_size','source_timestamp':max(m['timestamp'] for m in messages),'reason':''}
  state='queued' if asset and asset.get('state')=='ready' else 'waiting_sources'
  if state!='queued':payload['reason']='PSD chưa tải đủ hoặc có nhiều nguồn phù hợp; không xuất nhầm file.'
- with e.store.db() as d:d.execute('INSERT OR IGNORE INTO psd_samples VALUES(?,?,?,?,?,?,?)',(identity,run['account'],run['thread_id'],run['conversation'],state,json.dumps(payload,ensure_ascii=False),time.time()))
+ with e.store.db() as d:
+  d.execute('BEGIN IMMEDIATE')
+  existing=[r['id'] for r in d.execute('SELECT id,payload FROM psd_samples WHERE account=? AND thread_id=?',(run['account'],run['thread_id'])) if set(json.loads(r['payload']).get('messages',[]))==set(payload['messages'])]
+  if existing:identity=existing[0]
+  else:d.execute('INSERT OR IGNORE INTO psd_samples VALUES(?,?,?,?,?,?,?)',(identity,run['account'],run['thread_id'],run['conversation'],state,json.dumps(payload,ensure_ascii=False),time.time()))
  intake.state(run['id'],'ignored',{'intent':'sample_request','reason':'Lên mẫu PSD: chỉ xuất nội bộ, không tạo đơn ERP','sample_job_id':identity})
  return True
 
-def pending(e,account):
+def recovered_asset(db,account,thread,p):
+ from pathlib import Path
+ from datetime import datetime,timezone
+ a=p.get('asset') or {};identity=a.get('id','')
+ if not re.fullmatch('[a-f0-9]{64}',identity):return None
+ folders=set()
+ for row in db.execute("SELECT payload FROM captures WHERE account=? AND thread_id=? ORDER BY rowid DESC LIMIT 100",(account,thread)):
+  for other in json.loads(row[0]).get('assets',[]):
+   rel=other.get('relative_path','').replace('\\','/')
+   if rel and not rel.startswith('/') and '..' not in rel.split('/'):
+    folders.add(rel.split('/')[0])
+ month=datetime.fromtimestamp(p.get('source_timestamp',time.time()),timezone.utc).strftime('%Y-%m')
+ root=Path('/source-archive').resolve()
+ for folder in folders:
+  directory=(root/folder/month/'originals').resolve()
+  if root not in directory.parents:continue
+  for manifest in directory.glob(identity[:12]+'__*.psd.source.json'):
+   info=json.loads(manifest.read_text(encoding='utf-8'))
+   if info.get('asset_id')!=identity or info.get('name')!=a.get('name'):continue
+   file=(root/info.get('relative_path','')).resolve()
+   if root not in file.parents or not file.is_file():continue
+   with file.open('rb') as stream:digest=hashlib.file_digest(stream,'sha256').hexdigest()
+   if digest!=info.get('sha256'):continue
+   return {**a,'state':'ready','error':'','relative_path':info['relative_path'],'sha256':digest,'size':file.stat().st_size,'mime_type':info.get('mime_type','')}
+ return None
+
+def refresh_sources(e,account):
  init(e)
  with e.store.db() as d:
   waiting=d.execute("SELECT * FROM psd_samples WHERE account=? AND state='waiting_sources'",(account,)).fetchall()
@@ -51,10 +85,27 @@ def pending(e,account):
     if m.get('recalled') or m.get('revision'):continue
     for a in m.get('assets',[]):
      if a.get('state')=='ready' and a.get('name','').lower().endswith('.psd') and any(re.search(r'(?<![a-z0-9])'+re.escape(code)+r'(?![a-z0-9])',a['name'].casefold()) for code in codes):found[a['sha256']]=a
+   if not found:
+    recovered=recovered_asset(d,account,wait['thread_id'],p)
+    if recovered:found[recovered['sha256']]=recovered
    if len(found)==1:
     p['asset']=next(iter(found.values()));p['title']='Lên mẫu — '+p['asset']['name'];p['reason']=''
     d.execute("UPDATE psd_samples SET state='queued',payload=? WHERE id=?",(json.dumps(p,ensure_ascii=False),wait['id']))
-  r=d.execute("SELECT * FROM psd_samples WHERE account=? AND state IN ('queued','exporting') ORDER BY created LIMIT 1",(account,)).fetchone()
+
+def pending(e,account):
+ refresh_sources(e,account)
+ with e.store.db() as d:
+  candidates=d.execute("SELECT * FROM psd_samples WHERE account=? AND state IN ('queued','exporting') ORDER BY created",(account,)).fetchall()
+  from hub.direct_jpg_intake import dispatch_gate
+  r=None
+  for candidate in candidates:
+   payload=json.loads(candidate['payload'])
+   reason=dispatch_gate(d,payload.get('brief_id','')) if candidate['state']=='queued' else ''
+   if reason:
+    payload['reason']=reason
+    d.execute('UPDATE psd_samples SET payload=?,state=? WHERE id=?',(json.dumps(payload,ensure_ascii=False),'review' if reason.startswith('Cần kiểm tra') else 'queued',candidate['id']))
+    continue
+   r=candidate;break
   if not r:return None
   d.execute("UPDATE psd_samples SET state='exporting' WHERE id=?",(r['id'],))
  return {'id':r['id'],**json.loads(r['payload'])}
@@ -70,11 +121,17 @@ def complete(e,account,id,data):
  else:
   report=data['report'];preview=data['preview']
   if report['source_sha256']!=p['asset']['sha256'] or report['mode']!='CMYK' or report['pixels']!=report['source_pixels'] or report['dpi']!=report['source_dpi']:raise ValueError('PSD size/color mismatch')
+  if p.get('all_artboards'):
+   panels=report.get('panels',[])
+   if not report.get('all_artboards') or not panels or len(panels)!=report.get('artboard_count'):raise ValueError('PSD missing artboards')
+   if [v.get('index') for v in panels]!=list(range(1,len(panels)+1)):raise ValueError('PSD duplicate/missing artboard')
+   for panel in panels:
+    if panel.get('mode')!='CMYK' or panel.get('pixels')!=panel.get('source_pixels') or panel.get('dpi')!=panel.get('source_dpi') or not re.fullmatch('[a-f0-9]{64}',panel.get('sha256','')):raise ValueError('PSD artboard verification failed')
   if preview.get('mime_type')!='image/png' or len(preview['data'])>6000000:raise ValueError('Invalid preview')
   p['report']=report
   with e.store.db() as d:d.execute("UPDATE psd_samples SET state='publishing',payload=? WHERE id=?",(json.dumps(p,ensure_ascii=False),id))
   try:
-   result=e.effect('psd-preview:'+id,r['conversation'],'message',{'private':True,'message_type':'outgoing','content':p['title']+'\n'+p['request']+'\nJPG CMYK nguyên khổ PSD: '+str(report['size_cm'])+' cm; '+str(report['dpi'])+' DPI.\n'+report['path']+'\nGiữ PSD gốc. Chờ duyệt nội bộ; chưa RIP/gửi khách, không tạo đơn ERP.','_images':[preview]},apply_capture=True)
+   result=e.effect('psd-preview:'+id,r['conversation'],'message',{'private':True,'message_type':'outgoing','content':p['title']+'\n'+p['request']+'\nJPG CMYK nguyên khổ PSD: '+str(report['size_cm'])+' cm; '+str(report['dpi'])+' DPI.\n'+'\n'.join(x['path'] for x in report.get('panels',[report]))+'\nGiữ PSD gốc. Chờ duyệt nội bộ; chưa RIP/gửi khách, không tạo đơn ERP.','_images':[preview]},apply_capture=True)
    p['message_id']=result.get('id');p['reason']='Đã xuất JPG CMYK, chờ duyệt nội bộ';state='done'
   except Exception:
    state='uncertain';p['reason']='Chưa rõ kết quả đăng preview; không tự gửi lại.'
@@ -83,12 +140,12 @@ def complete(e,account,id,data):
 
 def listing(e):
  init(e)
- with e.store.db() as d:rows=d.execute('SELECT * FROM psd_samples ORDER BY created DESC LIMIT 200').fetchall()
+ with e.store.db() as d:rows=d.execute("SELECT * FROM psd_samples WHERE state!='deleted' ORDER BY created DESC LIMIT 200").fetchall()
  return [{'id':r['id'],'title':json.loads(r['payload'])['title'],'state':r['state'],'reason':json.loads(r['payload']).get('reason',''),'created':r['created'],'kind':'sample','account':r['account']} for r in rows]
 
 def detail(e,id):
  init(e)
  with e.store.db() as d:r=d.execute('SELECT * FROM psd_samples WHERE id=?',(id,)).fetchone()
- if not r:return None
+ if not r or r['state']=='deleted':return None
  p=json.loads(r['payload'])
  return {'id':id,'title':p['title'],'sample_only':True,'requirements':[p['request']],'missing':[p.get('reason','')],'assets':[],'images':[],'jobs':[{'id':id,'kind':'Lên mẫu PSD','state':r['state'],'path':p.get('report',{}).get('path',''),'reason':p.get('reason','')}],'current':False,'source_checks':[],'print_catalogs':[],'native':{},'management':{}}

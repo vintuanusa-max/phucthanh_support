@@ -39,10 +39,28 @@ def sanitize(config):
     if not isinstance(ids, list) or any(x != 'viber:g1' for x in ids):
         raise ValueError('Only verified Viber CDG scope is supported')
     result['viber_allowed_thread_ids'] = ids
+    scoped=config.get('group_intake_rules',{})
+    if not isinstance(scoped,dict):raise ValueError('Invalid group intake rules')
+    result['group_intake_rules']={}
+    for account,groups in scoped.items():
+        if not isinstance(account,str) or not isinstance(groups,dict):raise ValueError('Invalid group intake account')
+        result['group_intake_rules'][account]={}
+        for thread,row in groups.items():
+            if not isinstance(thread,str) or not isinstance(row,dict) or row.get('mode')!='primary_slip_sender' or not isinstance(row.get('primary_sender_id'),str) or not row['primary_sender_id'].isdigit():raise ValueError('Invalid primary slip sender')
+            result['group_intake_rules'][account][thread]={k:row[k] for k in ('mode','primary_sender_id')}
     return result
 
 
+def quality_only(channel, thread_id):
+    return (channel, thread_id) in {
+        ('zalo', 'g3307527274697028144'),
+        ('whatsapp', '120363407119559834@g.us'),
+    }
+
+
 def capture_allowed(config, channel, thread_id, name):
+    if quality_only(channel, thread_id):
+        return True
     if channel == 'viber':
         return thread_id in config.get('viber_allowed_thread_ids', [])
     if channel == "whatsapp" and not re.fullmatch(r"[0-9]+(?:-[0-9]+)?@g\.us", thread_id):
@@ -72,6 +90,8 @@ def allowed(config, channel, group, action="auto_order"):
 
 
 def eligible(config, channel, message):
+    if quality_only(channel, message.get('thread_id')):
+        return False
     if channel == 'viber' and not capture_allowed(config,channel,message.get('thread_id'),message.get('display_name')):
         return False
     if channel == 'whatsapp' and message.get('sender') == 'Thành viên chưa xác định tên':

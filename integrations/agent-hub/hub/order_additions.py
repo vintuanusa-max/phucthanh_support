@@ -134,7 +134,7 @@ class OrderAdditions:
 
     def new_addition(self,run,messages,request,binding,identity,previous=None):
         payload=json.loads(run['payload'])
-        note=('In thêm riêng từ đơn '+str(previous['order_ref'])+'; giữ nguyên đơn đã chuyển sản xuất.') if previous else 'Đặt thêm riêng: chưa xác định duy nhất đơn cũ. Đối chiếu mẫu trước khi in.'
+        note='Đơn mới theo yêu cầu đặt thêm; chỉ lấy số lượng khách vừa đặt, không cộng vào đơn cũ.'
         payload.update(customer_binding=binding,request_id='chatwoot-id:'+run['id'],
             addition_fallback={'source_message_id':request['source_message_id'],'delta':str(request['delta']),'previous_order_id':previous.get('order_id') if previous else None},
             orders=[{'ma_san_pham':None,'ten_mau':None,'so_luong':str(request['delta']),
@@ -185,46 +185,10 @@ class OrderAdditions:
                         self.intake.state(run['id'],'created',json.loads(old[1]));return True
                     self.intake.state(run['id'],'amended' if old[0]=='done' else 'review',json.loads(old[1]) if old[0]=='done' else {'reason':'Yêu cầu đặt thêm đã ghi nhận; không tự cộng lại'})
                     return True
-            try:
-                target=self.target(run,messages,binding)
-            except ValueError:
-                originals=[resolve_quote(self.store,m) for m in messages if m.get('quoted_image')]
-                target=self.match_target(run,messages+[m for m in originals if m],binding)
-            if target is None:
-                self.new_addition(run,messages,request,binding,identity)
-                return True
-            order_id,verified_files=target
-            snapshot=self.e.erp.quantity_snapshot(binding['customer_id'],order_id)
-            if not snapshot.get('status'):
-                raise ValueError('ERP chưa trả trạng thái đơn; không tự sửa')
-            if snapshot['status'] not in ('len_mau','mau_co_san','dang_chay_giay'):
-                self.new_addition(run,messages,request,binding,identity,previous=snapshot)
-                return True
-            if snapshot.get('mutation_policy') != 'quantity-states-v2':
-                raise ValueError('Cần nạp API ma trận trạng thái tăng/giảm mới; chưa tự cộng đơn cũ')
-            if 'recent' not in snapshot:raise ValueError('ERP cần nạp API giới hạn 3 ngày trước khi đối chiếu đơn cũ')
-            if not snapshot['recent']:
-                self.new_addition(run,messages,request,binding,identity)
-                return True
-            if len(snapshot['lines'])>1 and (not verified_files or {l.get('file') for l in snapshot['lines']}!=verified_files):
-                self.new_addition(run,messages,request,binding,identity)
-                return True
-            quantities={Decimal(str(l['quantity'])) for l in snapshot['lines']}
-            if len(quantities)!=1:raise ValueError('Các dòng khác số lượng; cần chỉ rõ mặt/dòng đặt thêm')
-            before=next(iter(quantities));after=before+request['delta']
-            if request['total'] is not None and after!=request['total']:
-                raise ValueError('Tổng khách chốt không bằng số lượng ERP cộng phần thêm; không tự cộng')
-            body={'request_id':identity,'customer_id':binding['customer_id'],'order_id':order_id,
-                  'source_account':run['account'],'group_id':run['thread_id'],
-                  'source_message_id':request['source_message_id'],'delta':str(request['delta']),
-                  'lines':[{'id':l['id'],'expected':str(l['quantity']),'target':str(after)} for l in snapshot['lines']]}
-            with self.store.db() as d:d.execute('INSERT INTO order_additions VALUES(?,?,?,?,?,?,?)',
-                (identity,run['account'],run['thread_id'],request['source_message_id'],'sending',json.dumps(body),'{}'))
-            receipt=self.e.erp.add_quantity(body)
-            text=f"KHÁCH ĐẶT THÊM — ĐÃ CẬP NHẬT ERP\nĐơn {snapshot['order_ref']}: {before} → {after} cái/dòng.\nCHỈ IN THÊM {request['delta']} cái cho mỗi dòng đã đối chiếu; không in lại tổng {after}. Giữ nguyên file, giá và trạng thái."
-            local={**body,'local_notice':{'run':dict(run),'messages':messages,'text':text}}
-            with self.store.db() as d:d.execute("UPDATE order_additions SET state='done',payload=?,result=? WHERE id=?",(json.dumps(local,ensure_ascii=False),json.dumps(receipt),identity))
-            self.intake.state(run['id'],'amended',receipt)
+            # Owner policy: "đặt thêm" is always a new order for the delta.
+            # Do not look up, compare or mutate any previous ERP order.
+            self.new_addition(run,messages,request,binding,identity)
+            return True
         except Exception as exc:
             reason=str(exc) if isinstance(exc,ValueError) else 'API cập nhật chưa sẵn sàng hoặc kết quả chưa rõ; kiểm tra ERP, không tự thử lại'
             text='KHÁCH YÊU CẦU ĐẶT THÊM — CẦN ĐỐI CHIẾU ERP\n'+reason+'\nCHƯA XÁC NHẬN CẬP NHẬT. Không in dựa riêng vào thông báo này; nhân viên kiểm tra tin/ảnh đính kèm.'

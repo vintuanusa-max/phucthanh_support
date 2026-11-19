@@ -7,16 +7,23 @@ from urllib.parse import quote
 from PIL import Image, ImageChops, ImageFilter, ImageOps
 
 
-SPOT_POLICY = 'white-preserve-color-contract1-v1'
+LEGACY_SPOT_POLICY = 'white-preserve-color-contract1-v1'
+from white_ink_auto import POLICY as SPOT_POLICY, rgb_coverage
 
-def spot_coverage(image):
-    """300dpi: preserve white alpha; choke color underbase by one pixel.
+def spot_coverage(image, policy=SPOT_POLICY):
+    """300dpi: adaptive color choke; preserve white and thin features.
 
     RGB >=250 in all channels is white (small raster rounding tolerance).
     Erode total alpha, then restore white coverage so adjoining white/color
     regions do not acquire an artificial unprinted seam.
     Transparent canvas edges are padded before erosion.
     """
+    if policy == SPOT_POLICY:
+        return rgb_coverage(image)
+    if policy == 'auto-rgb-luma-cmyk-total-white100-black40-v3':
+        return rgb_coverage(image, adaptive=False)
+    if policy != LEGACY_SPOT_POLICY:
+        raise ValueError('Unknown spot policy: '+str(policy))
     rgba=image.convert('RGBA');r,g,b,alpha=rgba.split()
     white=ImageChops.darker(ImageChops.darker(r,g),b).point(lambda v:255 if v>=250 else 0)
     white=ImageChops.multiply(white,alpha)
@@ -95,11 +102,11 @@ def export_photoshop(folder, files):
         raise ValueError('Photoshop chưa xác minh xong TIFF; không tự chạy lại action')
     for info in files:
         verify_spot_coverage(folder/info['name'],(folder/info['name']).with_suffix('.tiff'))
-    (folder/'spot-policy.json').write_text(json.dumps({'policy':SPOT_POLICY,'white_contract_px':0,'color_contract_px':1,'white_rgb_min':250,'pixel_verified':True}),encoding='utf-8')
+    (folder/'spot-policy.json').write_text(json.dumps({'policy':SPOT_POLICY,'white_contract_px':0,'color_contract_px':'adaptive 0..1','thin_features':'preserve 1-2px','transition_blur_px':1.5,'white_rgb_min':250,'color_mode':'RGB','density_basis':'RGB luma','white_percent':100,'black_percent':40,'solidity':100,'pixel_verified':True}),encoding='utf-8')
     return [verify_tiff(folder/f['name'],(folder/f['name']).with_suffix('.tiff'),f) for f in files]
 
 
-def verify_spot_coverage(png,tiff):
+def verify_spot_coverage(png,tiff,policy=SPOT_POLICY):
     import sys
     dependencies=Path(__file__).parent/'spot-deps'
     if dependencies.is_dir() and str(dependencies) not in sys.path:
@@ -107,7 +114,7 @@ def verify_spot_coverage(png,tiff):
     import tifffile
     import numpy as np
     with Image.open(png) as source:
-        expected=np.asarray(spot_coverage(source))
+        expected=np.asarray(spot_coverage(source,policy))
     with tifffile.TiffFile(tiff) as file:
         raw=file.pages[0].asarray()
     if raw.shape != (*expected.shape,5) or not np.array_equal(255-raw[:,:,4],expected):
@@ -149,7 +156,8 @@ def sync_pet(client, cfg, local_root):
             if hashlib.sha256(png.read_bytes()).hexdigest()!=info['sha256']:
                 raise ValueError('PNG đã đổi sau khi duyệt bản tách')
             if (folder/'spot-policy.json').exists():
-                verify_spot_coverage(png,tiff)
+                saved_policy=json.loads((folder/'spot-policy.json').read_text(encoding='utf-8')).get('policy',LEGACY_SPOT_POLICY)
+                verify_spot_coverage(png,tiff,saved_policy)
             checked=verify_tiff(png,tiff,info)
             if checked!=report:raise ValueError('Verified artifact changed')
             for source in (png,tiff):

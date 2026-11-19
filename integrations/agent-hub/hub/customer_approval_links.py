@@ -3,6 +3,7 @@ import base64,hashlib,io,json,time
 import httpx
 from PIL import Image
 ENABLED_AFTER=1792812861.4289787
+ENABLED = False  # Owner disabled automatic ERP sample reconciliation, 2026-11-04.
 SCHEMA={'type':'object','required':['verdict','matching_details','differences','uncertain'],'properties':{'verdict':{'type':'string','enum':['same_artwork','different','uncertain']},'matching_details':{'type':'array','items':{'type':'string'}},'differences':{'type':'array','items':{'type':'string'}},'uncertain':{'type':'array','items':{'type':'string'}}}}
 def decision(results):
     if any(x is None for x in results):return 'pending'
@@ -29,6 +30,10 @@ def compare(e,cache_key,parts):
     return value
 
 def tick(e,bridge=None):
+    # Disabled at the owner's request on 2026-11-04. Keep historical records;
+    # do not compare samples, publish review notes, or update ERP approvals.
+    if not ENABLED:
+        return
     root=e.settings.erp_url.rstrip('/')+'/api/v1/integrations/zalo/print-files'
     with e.store.db() as d:
         d.execute('CREATE TABLE IF NOT EXISTS customer_approval_comparisons(id TEXT PRIMARY KEY,state TEXT,result TEXT)')

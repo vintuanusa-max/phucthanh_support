@@ -71,7 +71,7 @@ def filename_from_response(response, url):
     return name or "download.bin"
 
 
-def download(url, destination, *, max_bytes=256 * 1024 * 1024):
+def download(url, destination, *, max_bytes=256 * 1024 * 1024, max_seconds=120):
     url = download_url(url)
     started = time.monotonic()
     transport = httpx.HTTPTransport()
@@ -94,7 +94,7 @@ def download(url, destination, *, max_bytes=256 * 1024 * 1024):
                 with Path(destination).open("wb") as stream:
                     for chunk in response.iter_bytes(65536):
                         total += len(chunk)
-                        if total > max_bytes or time.monotonic() - started > 120:
+                        if total > max_bytes or time.monotonic() - started > max_seconds:
                             raise ValueError("File download size/time limit")
                         if total == len(chunk) and chunk.lstrip().lower().startswith(
                             (b"<!doctype html", b"<html")

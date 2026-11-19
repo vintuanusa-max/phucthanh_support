@@ -11,7 +11,7 @@ PROMPT='''Đọc đủ phiếu lệnh, toàn bộ maket và file gốc; chỉ l�
 Native inventory là các hình chữ nhật chứa PatternColor gốc từ Illustrator, có số đo và ID. Các crop có thể chứa vật thể chồng lên; không chọn hình quai, túi nền, viền chỉ/đường đo. Chọn hình chữ nhật hoa văn ngoài đầy đủ cho front/back, tránh vùng thành phẩm bên trong. Đọc đủ mọi hoa văn trong file và maket; một tên hồ sơ Pattern1 không cho phép bỏ Pattern2 cùng đơn/file. Nêu issues nếu nguồn không đủ.
 Quy tắc chủ xưởng đã xác nhận: khổ ngang42 dài92 trong ngữ cảnh túi cao38, in2mặt là tấm liền hai mặt. Với đơn khác phải có bằng chứng dài vải bao phủ2mặt và chiều ngang/cao rõ; không chỉ dựa từ in2mặt. raw_width/raw_height giữ số trước co; code tự trừ ngang2cm, cao5cm nếu>=70, ngược lại cao2.5. Không lấy42/92 cho đơn khác.
 Chỉ full_coverage=true khi yêu cầu in hoa văn full túi. Giữ tỷ lệ pattern gốc bằng mở rộng vùng lặp, không kéo méo. Mặt trước trên, mặt sau xoay180 ở dưới. Gặp logo, khoảng trắng, cữ riêng, hai miếng rời, pattern khác giữa2mặt hoặc cần nối khớp đặc biệt thì issues để người duyệt.
-Quai/vải mét để khách tự cắt: meter_required=true chỉ khi phiếu/tin thật yêu cầu in quai/vải mét, không suy từ việc túi có quai. Nếu cùng hoa văn túi thì meter_same_pattern=true; mặc định chủ xưởng160×20cm, không co, không dấu L. Nếu khách quy định khổ khác, mã quai/hoa văn khác hoặc có mâu thuẫn thì issues, chưa xuất.
+Quai/vải mét để khách tự cắt: meter_required=true chỉ khi phiếu/tin thật yêu cầu in quai/vải mét, không suy từ việc túi có quai. Nếu cùng hoa văn túi thì meter_same_pattern=true; ngang160cm; chiều cao code lấy chu kỳ native, không mặc định20cm, không co, không dấu L. Nếu khách quy định khổ khác, mã quai/hoa văn khác hoặc có mâu thuẫn thì issues, chưa xuất.
 sources phải gồm message:ID phiếu/maket và file_page:n chứng minh geometry/artwork; sources_complete chỉ true khi đủ3nguồn đối chiếu cùng mã/phiên bản. Không chỉ nhìn tên file. Mã mẫu đúng phiếu. Không RIP/gửi khách.'''
 
 def validate_native(native,sha):
@@ -39,14 +39,14 @@ def validate(plan,native,refs):
     if plan.get('process')!='sublimation' or not plan.get('sources_complete') or plan.get('issues'):raise ValueError('; '.join(plan.get('issues',[])) or 'Thiếu phiếu/maket/file đã đối chiếu')
     code=plan.get('order_code','')
     if not re.fullmatch(r'[\w .-]{1,100}',code) or code in ('.','..'):raise ValueError('Invalid model code')
-    if not 1<=len(plan.get('patterns',[]))<=2:raise ValueError('Cần1–2hoa văn riêng đã đối chiếu')
-    known={o['id']:o for o in native['objects']};panels=[];used=[];names=set()
+    if not 1<=len(plan.get('patterns',[]))<=8:raise ValueError('Cần1–8hoa văn riêng đã đối chiếu')
+    known={o['id']:o for o in native['objects']};panels=[];used=[];names=set();blocked=[]
     for i,p in enumerate(plan['patterns']):
         p=dict(p,name='PATTERN_'+str(i+1))  # Stable filename; keep free-form model label in decision metadata.
         if not p['joined_confirmed'] or not p['full_coverage']:raise ValueError('Không đủ căn cứ tấm liền/hoa văn phủ toàn bộ')
         if not p['sources'] or not set(p['sources'])<=set(refs) or not any(s.startswith('message:') for s in p['sources']) or not any(s.startswith('file_page:') for s in p['sources']) or not p['explanation']:raise ValueError('Missing source evidence')
         a,b=known.get(p['front_id']),known.get(p['back_id'])
-        if not a or not b or a['pattern']!=b['pattern']:raise ValueError('Hai mặt chưa khớp pattern gốc')
+        if not a or not b or (a['pattern']!=b['pattern'] or a['page']!=b['page']):raise ValueError('Hai mặt chưa khớp pattern gốc')
         a,b=outer_pattern(a,native['objects']),outer_pattern(b,native['objects'])
         if a['pattern'] in names:raise ValueError('Hoa văn bị chọn lặp; cần kiểm tra')
         names.add(a['pattern'])
@@ -59,9 +59,13 @@ def validate(plan,native,refs):
         panels.append(dict(**common,name=p['name']+'_BAG',kind='bag_panel',output_cm=[w,h],corner_marks=True))
         if p['meter_required']:
             if not p['meter_same_pattern']:raise ValueError('Quai/vải mét khác hoa văn cần duyệt')
-            panels.append(dict(**common,name=p['name']+'_METER',kind='meter_fabric',output_cm=[160,20],corner_marks=False))
+            repeat=a.get('repeat',{})
+            height=repeat.get('height_cm')
+            if repeat.get('method')!='native_pdf_tiling_identity_transform' or type(height) not in (int,float) or not 0<height<=100:
+                blocked.append({'part':p['name']+'_METER','reason':'Chưa xác minh chu kỳ hoa văn; không tự dùng cao20cm'})
+            else:panels.append(dict(**common,name=p['name']+'_METER',kind='meter_fabric',output_cm=[160,height],corner_marks=False,repeat=repeat))
         used.extend([a,b])
-    return dict(renderer='native_pattern_v1',order_code=code,panels=panels,native_objects=list({o['id']:{k:v for k,v in o.items() if k!='preview'} for o in used}.values()),mirror=False,decision=plan)
+    return dict(blocked_parts=blocked,renderer='native_pattern_v1',order_code=code,panels=panels,native_objects=list({o['id']:{k:v for k,v in o.items() if k!='preview'} for o in used}.values()),mirror=False,decision=plan)
 
 def prepare(ask,native,parts,refs):
     if len({x for x in refs if x.startswith('message:')})<2 or not any(x.startswith('file_page:') for x in refs):raise ValueError('Cần đủ ảnh phiếu/maket và file gốc')
@@ -69,6 +73,6 @@ def prepare(ask,native,parts,refs):
     material=list(parts)+[{'text':'NATIVE_PATTERN_OBJECTS '+json.dumps(compact,ensure_ascii=False)}]
     for o in native['objects']:
         material.extend([{'text':'Native pattern crop '+o['id']+' page '+str(o['page'])},{'inline_data':{'mime_type':'image/png','data':o['preview']}}])
-    plan=ask(PROMPT,material,SCHEMA)
+    plan=ask(PROMPT,material,SCHEMA,model="gemini-2.5-pro")
     if plan['process']=='other':return None
     return validate(plan,native,refs)

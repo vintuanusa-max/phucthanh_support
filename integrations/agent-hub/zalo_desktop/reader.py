@@ -158,6 +158,8 @@ class Reader:
         self.secret = None
         self.keys = {}
         self.last_probe = 0
+        self.recovery_attempts = 0
+        self.last_key_verified_at = None
         self.zalo_session = None
         self.last_names = 0
         self.names_mark = None
@@ -210,7 +212,26 @@ class Reader:
             "updated_at": time.time(),
             "pid": os.getpid(),
             "outbox": self.state.counts(),
+            "delivery_issues": getattr(self,"delivery_issues",[]),
             "key_in_memory": bool(self.secret),
+            "key_source": getattr(self, "key_source", None),
+            "poll_seconds": self.cfg.get("poll_seconds", 10),
+            "source_pause": getattr(self,"source_pause",None),
+            "read_mode": "idle_only",
+            "source_reading": getattr(self,"source_reading",False),
+            "last_read_start": getattr(self,"last_read_start",None),
+            "last_read_end": getattr(self,"last_read_end",None),
+            "recovery": {
+                "attempts": self.recovery_attempts,
+                "retry_seconds": 60,
+                "max_attempts": 3,
+                "stopped_after_limit": self.recovery_attempts >= 3 and not bool(self.secret),
+                "last_key_verified_at": self.last_key_verified_at,
+                "zalo_version": Path(self.cfg["zalo_exe"]).parent.name,
+                "strategies": ["verified_passphrase_pragma", "verified_sqlcipher_literal"],
+                "needs_review": not bool(self.secret) and self.recovery_attempts > 0
+                and self.errors.get("source") != "recovering_verified_session",
+            },
             "group_names": len(self.group_names),
             "errors": self.errors,
             "source_mode": "read_only",
@@ -239,6 +260,11 @@ class Reader:
         response.raise_for_status()
 
     def read_changed(self):
+        from .idle_reader import allowed
+        if not allowed(self):return
+        self.source_reading=True
+        self.last_read_start=time.time()
+        self.status("running")
         from .memory import MemoryReader
         from .runtime import running_session
 
@@ -256,19 +282,28 @@ class Reader:
             self.last_names = 0
             self.names_mark = None
             self.zalo_session = identity
+            self.recovery_attempts = 0
         self.cfg['zalo_exe'] = exe
 
         if not self.secret:
             if time.monotonic() - self.last_probe < 60:
-                return
+                raise SnapshotError(self.errors.get("source", "session_secret_unavailable"))
             self.last_probe = time.monotonic()
-            self.secret = MemoryReader(self.cfg["zalo_exe"]).find_secret(self.root)
+            from .key_recovery import acquire
+            cache = self.home / ('session-key-' + hashlib.sha256(str(self.root.resolve()).encode()).hexdigest()[:16] + '.dpapi')
+            self.errors["source"] = "recovering_verified_session"
+            self.secret = acquire(self, cache, MemoryReader(self.cfg["zalo_exe"]))
+            self.last_key_verified_at = time.time()
+            self.recovery_attempts = 0
+            self.errors.pop("source", None)
+        if not allowed(self):return
         try:
             self.refresh_names()
             self.errors.pop("group_names", None)
         except Exception as exc:
             self.errors["group_names"] = type(exc).__name__
-        for path in sorted(self.root.glob("*.db"), key=lambda p: p.stat().st_mtime, reverse=True):
+        for path in sorted(self.root.glob("*.db"), key=lambda p: p.stat().st_mtime):
+            if not allowed(self):break
             if not self.capture_allowed({"thread_id": path.stem}):
                 continue  # Do not snapshot, decrypt, enqueue or download excluded conversations.
             tag = hashlib.sha256(path.name.encode()).hexdigest()[:12]
@@ -311,27 +346,8 @@ class Reader:
                     break
 
     def flush(self):
-        for thread, msg, encoded in self.state.pending():
-            message = json.loads(encoded)
-            if not self.capture_allowed(message):
-                with self.state.db:
-                    self.state.db.execute(
-                        "UPDATE outbox SET state='ignored_policy' WHERE thread=? AND msg=?",
-                        (thread, msg),
-                    )
-                continue
-            if self.vault:
-                message = self.vault.enrich(message)
-                if message is None:
-                    continue
-            response = self.http.post("/ingest", json=message)
-            response.raise_for_status()
-            result = response.json()
-            if result.get("stored") is not True:
-                raise ValueError("Hub did not acknowledge capture")
-            self.state.accepted(thread, msg, result["id"])
-            if self.vault:
-                self.vault.release(message)
+        from .isolated_flush import flush
+        flush(self)
 
     def tick(self):
         self.load_capture_policy()  # Local policy failure stops both capture and flush.
@@ -344,7 +360,20 @@ class Reader:
         except Exception as exc:
             self.errors["order_sync"] = type(exc).__name__
         try:
-            self.read_changed()
+            from .idle_reader import event
+            event(self,"read_start",key_source=getattr(self,"key_source",None))
+            try:
+                from .safe_zalo import lock,unlock
+                source_lock=lock(self.home)
+                if source_lock:
+                    try:self.read_changed()
+                    finally:unlock(source_lock)
+                else:self.source_pause="safe_open_requested"
+            finally:
+                if getattr(self,"source_reading",False):self.last_read_end=time.time()
+                self.source_reading=False
+                self.status("waiting" if self.errors else "running")
+                event(self,"read_end",pause=getattr(self,"source_pause",None),key_source=getattr(self,"key_source",None))
             self.errors.pop("source", None)
         except Exception as exc:
             self.errors["source"] = str(exc) if isinstance(exc, SnapshotError) else type(exc).__name__
@@ -352,7 +381,7 @@ class Reader:
             self.flush()
             self.errors.pop("hub", None)
         except Exception as exc:
-            self.errors["hub"] = type(exc).__name__
+            self.errors["hub"] = type(exc).__name__ + (":"+str(exc.response.status_code) if isinstance(exc,httpx.HTTPStatusError) else "")
         self.status("waiting" if self.errors or not self.secret else "running")
 
 
@@ -393,7 +422,14 @@ def main():
             if args.once:
                 print(json.dumps({"outbox": reader.state.counts(), "errors": reader.errors}))
                 return
-            time.sleep(max(5, reader.cfg.get("poll_seconds", 10)))
+            from .idle_reader import allowed
+            for _ in range(int(max(5,reader.cfg.get("poll_seconds",30)))):
+                if (reader.home / "stop.flag").exists():break
+                old_pause=getattr(reader,"source_pause",None)
+                allowed(reader)
+                if old_pause!=getattr(reader,"source_pause",None):
+                    reader.status("waiting" if reader.errors else "running")
+                time.sleep(1)
     finally:
         if reader.vault:
             reader.vault.stop.set()

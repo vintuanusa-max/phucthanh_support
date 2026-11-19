@@ -60,9 +60,9 @@ def author(message):
     return message.get('sender_id') or key(message.get('sender',''))
 
 
-def select_approval(confirmation, history):
+def select_approval(confirmation, history, *, agent_verified=False):
     """Never use another group's image, a quote thumbnail, or an unresolved attachment."""
-    if not is_confirmation(confirmation['text']):
+    if not agent_verified and not is_confirmation(confirmation['text']):
         raise ValueError('Chưa có câu chốt in rõ ràng')
     if confirmation.get('revision') or confirmation.get('recalled'):
         raise ValueError('Tin xác nhận đã sửa/thu hồi')
@@ -79,7 +79,7 @@ def select_approval(confirmation, history):
         if not photos:
             raise ValueError('Chưa có ảnh mẫu đã kiểm chứng')
         last=photos[-1]
-        if contextual_confirmation(confirmation['text']) and last.get('origin') != 'staff':
+        if (agent_verified or contextual_confirmation(confirmation['text'])) and last.get('origin') != 'staff':
             raise ValueError('Câu chốt cần gắn với mẫu nhân viên gửi duyệt')
         if simple_ok(confirmation['text']):
             prompts=[m for m in same if m.get('origin')=='staff' and author(m)==author(last)
@@ -146,13 +146,17 @@ class PrintApprovals:
         if poll_changes(self):return True
         with self.engine.store.db() as db:
             rows=db.execute("SELECT c.payload FROM captures c LEFT JOIN print_approvals p ON p.account=c.account AND p.thread_id=c.thread_id AND p.confirmation_id=c.message_id WHERE p.id IS NULL AND NOT EXISTS(SELECT 1 FROM print_change_sources x WHERE x.account=c.account AND x.thread_id=c.thread_id AND x.message_id=c.message_id) AND json_extract(c.payload,'$.timestamp')>=? AND json_extract(c.payload,'$.timestamp')<? ORDER BY json_extract(c.payload,'$.timestamp') DESC LIMIT 500",(route['enabled_after'],time.time())).fetchall()
+        with self.engine.store.db() as db:
+            table=db.execute("SELECT 1 FROM sqlite_master WHERE name='agent_approval_handoffs'").fetchone()
+            verified={tuple(r) for r in db.execute("SELECT account,thread_id,message_id FROM agent_approval_handoffs")} if table else set()
         for row in rows:
             m=json.loads(row[0])
+            agent_verified=(m['account'],m['thread_id'],m['message_id']) in verified
             from hub.quality_monitor import monitored
             if monitored(m['account'],m['thread_id']):continue
             cfg=self.engine.settings.inboxes.get(m['account'],{})
             policy=self.engine.order_intake.policy(m['account'])
-            if policy is None or not (is_confirmation(m['text']) or is_reprint(m['text'])):continue
+            if policy is None or not (agent_verified or is_confirmation(m['text']) or is_reprint(m['text'])):continue
             if m['origin']!='customer' or m['direction']!='incoming' or (m['account'],m['thread_id'])==(route['account'],route['thread_id']):continue
             if not capture_allowed(policy,cfg.get('channel'),m['thread_id'],m['display_name']):continue
             if key(m['sender']) in {key(n) for n in policy.get(cfg.get('channel','')+'_internal_members',[])}:continue
@@ -165,9 +169,7 @@ class PrintApprovals:
             payload={'destination':route,'confirmation':m['message_id']}
             try:
                 reprint=is_reprint(m['text'])
-                if not reprint and any(x['timestamp']>m['timestamp'] and author(x)==author(m) and not is_confirmation(x['text']) for x in history):
-                    raise ValueError('Khách có tin bổ sung sau câu chốt; cần kiểm tra lại')
-                chosen=select_reprint(m,history) if reprint else select_approval(m,history)
+                chosen=select_reprint(m,history) if reprint else select_approval(m,history,agent_verified=agent_verified)
                 if reprint:
                     payload.update(kind='reprint',notice='YÊU CẦU IN BÙ — '+m['text']+'\nĐối chiếu đúng ảnh và số lượng; không phải thay đổi sau duyệt. Không tự tạo đơn ERP mới.')
                 payload['messages']=[x['message_id'] for x in chosen]
@@ -226,19 +228,21 @@ class PrintApprovals:
         with self.engine.store.db() as db:
             return [t['account'] for t in targets if db.execute("SELECT 1 FROM print_approvals p WHERE state='ready' AND NOT EXISTS(SELECT 1 FROM print_deliveries d WHERE d.approval_id=p.id AND d.account=?) LIMIT 1",(t['account'],)).fetchone()]
 
-    def claim(self, adapter, destination=None):
+    def claim(self, adapter, destination=None, *, owner="local", min_created=0):
         route=self.route()
         if not route or route['account']!=adapter or not route.get('delivery_enabled'):return None
         targets=route.get('destinations') or [{'account':adapter,'thread_id':route['thread_id']}]
         target=next((t for t in targets if t['account']==(destination or adapter)),None)
         if not target:return None
+        from hub.bot101_forward import owner as delivery_owner
+        if delivery_owner(self.engine.store,target["account"]) != owner:return None
         with self.engine.store.db() as db:
             db.execute('BEGIN IMMEDIATE')
-            row=db.execute("SELECT * FROM print_approvals p WHERE state='ready' AND NOT EXISTS(SELECT 1 FROM print_deliveries d WHERE d.approval_id=p.id AND d.account=?) ORDER BY created LIMIT 1",(target['account'],)).fetchone()
+            row=db.execute("SELECT * FROM print_approvals p WHERE state='ready' AND p.created>=? AND NOT EXISTS(SELECT 1 FROM print_deliveries d WHERE d.approval_id=p.id AND d.account=?) ORDER BY created LIMIT 1",(min_created,target['account'])).fetchone()
             if not row:return None
             payload=json.loads(row['payload'])
             confirmation=db.execute("SELECT payload FROM captures WHERE account=? AND thread_id=? AND message_id=? ORDER BY revision DESC LIMIT 1",(row['account'],row['thread_id'],row['confirmation_id'])).fetchone()
-            if not confirmation or json.loads(confirmation[0]).get('timestamp',0)<route['enabled_after']:
+            if not confirmation or json.loads(confirmation[0]).get('timestamp',0)<max(route['enabled_after'],min_created):
                 payload['reason']='Không gửi: trước mốc tiếp nhận duyệt in đã cấu hình'
                 db.execute("UPDATE print_approvals SET state='excluded_before_cutoff',payload=? WHERE id=?",(json.dumps(payload,ensure_ascii=False),row['id']))
                 return None
@@ -261,16 +265,16 @@ class PrintApprovals:
             if payload.get('kind')=='reprint':
                 selected=select_sources(db,row['account'],row['thread_id'],payload['messages'])
                 newer=db.execute("SELECT 1 FROM captures WHERE account=? AND thread_id=? AND json_extract(payload,'$.timestamp')>? AND json_extract(payload,'$.origin')='customer' LIMIT 1",(row['account'],row['thread_id'],max(x['timestamp'] for x in selected))).fetchone()
-            if newer and payload.get('kind') not in ('amendment','order_addition'):
+            if newer and payload.get('kind') not in ('amendment','order_addition','placement'):
                 later=[json.loads(x[0]) for x in db.execute("SELECT payload FROM captures WHERE account=? AND thread_id=? AND json_extract(payload,'$.timestamp')>?",(row['account'],row['thread_id'],m['timestamp']))]
                 newer=any(x.get('origin')=='customer' for x in staff_context(later,policy,cfg['channel']))
-            if newer and payload.get('kind') not in ('amendment','order_addition'):
+            if newer and payload.get('kind') not in ('amendment','order_addition','placement'):
                 db.execute("UPDATE print_approvals SET state='review' WHERE id=?",(row['id'],));return None
             delivery_id=hashlib.sha256((row['id']+':'+target['account']).encode()).hexdigest()
             db.execute("INSERT INTO print_deliveries VALUES(?,?,?,?,?,NULL)",(delivery_id,row['id'],target['account'],target['thread_id'],'sending'))
             caption='CHỐT IN — '+mapping['display_name']+'\nKhách: '+m['sender']+'\nXác nhận: '+m['text']+'\nHồ sơ: CHOT-IN-'+row['id'][:16]
-            if payload.get('kind') in ('amendment','reprint','order_addition'):caption=payload['notice']+'\nNhóm: '+mapping['display_name']+'\nBản cập nhật: CHOT-IN-'+row['id'][:16]
-            return dict(id=delivery_id,approval_id=row['id'],account=target['account'],thread_id=target['thread_id'],caption=caption,image_base64=payload['evidence']['image_base64'])
+            if payload.get('kind') in ('amendment','reprint','order_addition','placement'):caption=payload['notice']+'\nNhóm: '+mapping['display_name']+'\nBản cập nhật: CHOT-IN-'+row['id'][:16]
+            return dict(id=delivery_id,approval_id=row['id'],account=target['account'],thread_id=target['thread_id'],caption=caption,image_base64=payload['evidence']['image_base64'],evidence={k:v for k,v in payload['evidence'].items() if k!='image_base64'})
 
     def delivered(self,adapter,identity,result):
         route=self.route()
@@ -292,8 +296,10 @@ class PrintApprovals:
             is_change=json.loads(approval['payload']).get('kind')=='amendment'
             label='ĐÃ BÁO THAY ĐỔI SAU DUYỆT: ' if is_change else 'ĐÃ CHUYỂN DUYỆT IN: '
             if json.loads(approval['payload']).get('kind')=='order_addition':label='ĐÃ BÁO YÊU CẦU ĐẶT THÊM: '
+            if json.loads(approval['payload']).get('kind')=='placement':label='ĐÃ CHUYỂN LỜI DẶN CỮ IN: '
             mapping=self.engine.store.thread(account=approval['account'],thread_id=approval['thread_id'])
             if mapping:self.engine.note(row['approval_id']+':print-complete',mapping['conversation'],label+'Bản tổng hợp ảnh và tin xác nhận đã gửi tới nhóm File In - Giấy In - Màng Pet trên các kênh đã cấu hình. Hồ sơ CHOT-IN-'+row['approval_id'][:16]+'. Việc này độc lập với tạo đơn ERP; cảnh báo thiếu thông tin ERP cần được xử lý riêng.',apply_capture=True)
         if state in ('uncertain','blocked','submitted'):
+            if json.loads(approval['payload']).get('kind')=='placement':label='ĐÃ CHUYỂN LỜI DẶN CỮ IN: '
             mapping=self.engine.store.thread(account=approval['account'],thread_id=approval['thread_id'])
             if mapping:self.engine.note(identity+':print-delivery',mapping['conversation'],'CHUYỂN CHỐT IN CẦN KIỂM TRA: '+row['account']+' — '+state+'. Không tự gửi lại để tránh trùng.',apply_capture=True)

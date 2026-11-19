@@ -28,7 +28,7 @@ class Source:
             return
         self.key = None
         seen = set()
-        reader = MemoryReader(Path(os.environ['LOCALAPPDATA'])/'Viber/Viber.exe')
+        reader = MemoryReader(self.qt.root/'Viber.exe')
         for data in reader.chunks(seconds=45):
             candidates = [m[1] for m in re.finditer(rb'(?<![0-9a-fA-F])([0-9a-fA-F]{32}|[0-9a-fA-F]{64}|[0-9a-fA-F]{128})(?![0-9a-fA-F])', data)]
             candidates.extend(m[0].replace(b'\0', b'') for m in re.finditer(rb'(?:(?:[0-9a-fA-F])\x00){32,128}', data))
@@ -42,6 +42,15 @@ class Source:
         raise RuntimeError('Session key unavailable')
 
     def read(self, cutoff):
+        from .runtime import active_exe,signature
+        current=active_exe()
+        if current is None:
+            self.key=None
+            raise RuntimeError('Waiting for Viber Desktop')
+        if current.parent!=self.qt.root or signature(current.parent)!=self.qt.version_signature:
+            # Loaded Qt DLLs must be replaced by a fresh process, not hot-swapped.
+            self.key=None
+            raise SystemExit('Viber upgraded; watchdog will restart reader')
         raw, wal, _ = snapshot(self.profile/'viber.db', 32*1024*1024)
         with tempfile.TemporaryDirectory(prefix='pt-viber-copy-') as directory:
             path = Path(directory)/'snapshot.db'

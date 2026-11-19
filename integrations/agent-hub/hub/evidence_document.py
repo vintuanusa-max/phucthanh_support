@@ -166,6 +166,9 @@ def render_document(messages, order_code, notice=None, new_message_ids=None):
         if not (has_images and message["text"] == "[Ảnh Zalo lưu trong kho NAS]"):
             lines(message.get("text") or "[Không có nội dung chữ]")
         quote = message.get('quoted_image')
+        if message.get('quoted_file'):
+            from hub.quoted_files import description
+            lines(description(message['quoted_file']), small)
         if quote:
             if not quote['resolved']:
                 raise ValueError('Unresolved quoted image')
@@ -183,6 +186,7 @@ def render_document(messages, order_code, notice=None, new_message_ids=None):
             y += frame.height + 16
         for asset in message.get("assets", []):
             lines("Tệp nguồn: " + asset["name"], small)
+            if asset.get('state')!='ready':lines('Chưa tải được file gốc: '+asset.get('error','unknown')+'; không có preview nội dung file.',small)
             if asset.get("sha256"):
                 lines("SHA256 gốc: " + asset["sha256"], small)
         y += 12

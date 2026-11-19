@@ -34,15 +34,13 @@ def submit(e,bid,data):
   d.execute('BEGIN IMMEDIATE')
   r=d.execute('SELECT * FROM design_briefs WHERE id=?',(bid,)).fetchone()
   if not r:raise ValueError('Không có hồ sơ')
-  b=json.loads(r['payload']);mapping=e.store.thread(account=r['account'],thread_id=r['thread_id']);policy=e.order_intake.policy(r['account'])
-  if not mapping or not policy or not capture_allowed(policy,e.settings.inboxes[r['account']]['channel'],r['thread_id'],mapping['display_name']):raise ValueError('Nhóm không được phép')
-  if not e.artwork_checks.pet.workflow.current(bid):raise ValueError('Hồ sơ đã được thay thế')
+  b=json.loads(r['payload'])
   sha=str(data.get('sha256',''));sources=[(s,a) for s in b.get('sources',[]) for a in s.get('assets',[]) if a.get('state')=='ready' and a.get('sha256')==sha and a.get('name','').lower().endswith(('.pdf','.ai'))]
   if not sources:raise ValueError('Nguồn không thuộc hồ sơ')
   src,asset=sources[0];action=data.get('action');p={'asset':asset,'source_message_id':src['message_id'],'brief_id':bid,'conversation':r['conversation'],'thread_id':r['thread_id'],'private':True,'mirror':False,'auto_rip':False}
   if action=='native_scan':
    identity=event_key('native-scan-v1',bid,sha);state='scan_queued'
-  elif action=='native_export':
+  elif action in ('native_export','native_plan'):
    scan=d.execute("SELECT * FROM native_selections WHERE id=? AND brief_id=? AND state='candidates_ready'",(str(data.get('scan_id','')),bid)).fetchone()
    if not scan:raise ValueError('Chưa đọc xong các cụm')
    sp=json.loads(scan['payload'])
@@ -54,16 +52,25 @@ def submit(e,bid,data):
    if any(c.get('name')=='Manual Dimension' for c in chosen):raise ValueError('Không chọn đối tượng đường kích thước (Manual Dimension)')
    if any(c.get('live_text_count',1)>0 for c in chosen) and sp['scan'].get('missing_fonts'):raise ValueError('Cụm có chữ sống và font thiếu: cần khôi phục font hoặc outline từ file gốc trước khi xuất')
    width=float(data.get('width_cm',0));note=str(data.get('note','')).strip()
+   if action=='native_plan':
+    if not b.get('manual_export'):raise ValueError('Lập phương án chọn tay chỉ áp dụng hồ sơ chạy tay')
+    bounds=[c['bounds'] for c in chosen]
+    width=(max(v[2] for v in bounds)-min(v[0] for v in bounds))*2.54/72
+    height=(max(v[1] for v in bounds)-min(v[3] for v in bounds))*2.54/72
+    if not math.isfinite(height) or not .1<=height<=160:raise ValueError('Chiều cao group ngoài khổ PET hỗ trợ')
+    note=note or 'Chủ xưởng chọn artwork; giữ nguyên kích thước group trong file nguồn'
+    p['auto_face']={'side':str(data.get('side','front')),'candidate_ids':ids,'basis':'source_layout','width_cm':width,'height_cm':height,'dimension_refs':['file:'+sha]}
+    p['manual_export']=True
    if not math.isfinite(width) or not .1<=width<=160 or not 5<=len(note)<=3000:raise ValueError('Cần chiều ngang 0,1–160cm và ghi chú đối chiếu')
    side=str(data.get('side','front'))
    if side not in ['front','back','left','right','brim','label']+['position_'+str(i) for i in range(1,9)]:raise ValueError('Vị trí in không hợp lệ')
    p.update(side=side,scan_id=scan['id'],candidates=chosen,candidate_ids=ids,width_cm=width,note=note,font_warnings=sp['scan'].get('missing_fonts',[]))
-   identity=event_key('native-export-v2',bid,sha,json.dumps(ids),str(width),side,note);state='render_queued'
+   identity=event_key('native-plan-v1' if action=='native_plan' else 'native-export-v2',bid,sha,json.dumps(ids),str(width),side,note);state='awaiting_owner' if action=='native_plan' else 'render_queued'
   else:raise ValueError('Lệnh không hợp lệ')
   if d.execute('SELECT 1 FROM native_selections WHERE id=?',(identity,)).fetchone():return {'id':identity,'duplicate':True,'message':'Lượt này đã có, không xuất trùng'}
   if d.execute("SELECT 1 FROM native_selections WHERE brief_id=? AND (state IN ('scan_queued','scan_running','render_queued','render_running','png_check_queued','uncertain') OR json_extract(payload,'$.auto_status') IN ('planning','verifying','waiting_verify','waiting_scan'))",(bid,)).fetchone() or any(j['state'] in ACTIVE for j in jobs(d,bid)):raise ValueError('Hồ sơ đang chạy/chưa rõ kết quả, không chạy chồng')
   d.execute('INSERT INTO native_selections VALUES(?,?,?,?,?,?)',(identity,bid,r['account'],state,json.dumps(p),time.time()))
- return {'id':identity,'message':'Đã xếp hàng Illustrator; chỉ xuất mẫu nội bộ, không sửa đơn ERP'}
+ return {'id':identity,'message':'Đã lưu artwork và lập phương án PET nguyên kích thước. Duyệt phương án để xuất.' if action=='native_plan' else 'Đã xếp hàng Illustrator; chỉ xuất mẫu nội bộ, không sửa đơn ERP'}
 
 def pending(e,account):
  init(e)
@@ -79,6 +86,8 @@ def pending(e,account):
 
 def result(e,account,identity,data):
  init(e)
+ from hub.print_governance import settings,rule_version
+ rule_conf=settings(e.store)
  with LOCK,e.store.db() as d:
   r=d.execute('SELECT * FROM native_selections WHERE id=? AND account=?',(identity,account)).fetchone()
   if not r:raise ValueError('Không có lượt Illustrator')
@@ -128,7 +137,8 @@ def result(e,account,identity,data):
     info=dict(name=name,sha256=hashlib.sha256(raw).hexdigest(),pixels=list(im.size),width_cm=round(width,3),height_cm=round(height,3))
    warnings=[p['note']]+(['Font nguồn chưa có trên máy: '+', '.join(p['font_warnings'])+'. Cụm chọn không có chữ sống; giữ vector/ảnh gốc.'] if p['font_warnings'] else [])
    plan={'order_code':code,'faces':[{'side':p.get('side','front'),'object_ids':p['candidate_ids'],'width_cm':width,'height_cm':height}],'review_warnings':warnings}
-   pp={'source':dict(p),'brief_id':p['brief_id'],'archive_folder':p['asset']['relative_path'].replace('\\','/').split('/')[0],'conversation':p['conversation'],'private':True,'auto_rip':False,'plan':plan,'files':[info],'native_selection':identity,'verification':{'review_warnings':warnings}}
+   if p.get('selection_recipe'):plan['selection_recipe']=p['selection_recipe']
+   pp={'rule_version':rule_version(rule_conf),'rule_snapshot':rule_conf['rules'],'source':dict(p),'brief_id':p['brief_id'],'archive_folder':p['asset']['relative_path'].replace('\\','/').split('/')[0],'conversation':p['conversation'],'private':True,'auto_rip':False,'plan':plan,'files':[info],'native_selection':identity,'verification':{'review_warnings':warnings}}
    if p.get('auto_selected'):
     p['pending_pet']=pp;p['auto_status']='waiting_verify';state='png_check_queued'
    else:

@@ -2,6 +2,21 @@
 import re
 from hub.workflow_rules import normalize
 
+def owner_restoration_consent(brief, approval, request_id):
+    """A scoped owner command, never inferred from ordinary customer prose."""
+    if not approval:return None
+    if approval.get('authorized') is not True or approval.get('brief_id')!=brief.get('id'):
+        raise ValueError('Phê duyệt phục hồi không khớp hồ sơ')
+    image_id=approval.get('image_id')
+    sources=[s for s in brief.get('sources',[]) if image_id and image_id in s.get('images',[])]
+    if len(sources)!=1 or not request_id:raise ValueError('Phê duyệt phục hồi chưa gắn đúng một ảnh nguồn')
+    src=sources[0]
+    return {'method':'explicit_owner_restoration','owner_request_id':request_id,
+            'question_message_id':'owner-request:'+request_id,'answer_message_id':'owner-approval:'+request_id,
+            'account':brief['account'],'thread_id':brief['thread_id'],'sender_id':'owner',
+            'source_message_ids':[src['message_id']],'image_id':image_id,
+            'enhance_only':approval.get('enhance_only') is True}
+
 def restoration_consent(context):
     batch=context.get('batch',[]);ids={m['message_id'] for m in batch}
     customers={m.get('sender_id') for m in batch if m.get('role')=='customer' and m.get('sender_id')}

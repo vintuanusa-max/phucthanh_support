@@ -1,0 +1,873 @@
+<!doctype html><html lang="vi"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Quản lý đơn & file in · Phúc Thanh</title><style>body{font:16px system-ui;margin:25px;background:#f1f5f9;color:#172334}button{padding:10px;background:#245acc;color:white;border:0;border-radius:6px;cursor:pointer}button:disabled{opacity:.4}input,select,textarea{font:inherit;padding:10px;box-sizing:border-box}textarea{width:100%;height:110px}#layout{display:grid;grid-template-columns:1fr 1fr;gap:20px}#detail{min-width:0;overflow-wrap:anywhere;background:white;padding:20px;align-self:start}article{background:white;padding:15px;margin:10px 0;border-radius:8px}img{max-width:46%;max-height:260px;object-fit:contain;margin:5px}p{line-height:1.6}.error{color:#c21}details{margin:12px 0}@media(max-width:850px){#layout{display:block}}</style>
+<h1>Điều phối file in</h1><p>Hồ sơ chưa hoàn thành · Lệnh xuất bản mới chỉ để duyệt nội bộ · Chưa RIP/gửi khách hoặc tạo lại đơn ERP.</p><button onclick="refresh()">Làm mới</button><details><summary onclick="managementSettings()">Quản lý API / quy tắc / lịch sử cấu hình</summary><div id="management-settings"></div></details><section id="zalo-sender" aria-live="polite">Đang đọc trạng thái bộ gửi Zalo…</section><div id="audit-links"></div><p id="summary"></p><p id="error" class="error"></p><details><summary>Trạng thái hệ thống</summary><div id="status"></div></details><input id="search" placeholder="Tìm tên mẫu / lý do" oninput="render()"><select id="filter" onchange="render()"><option value="all">Cần xử lý / chưa hoàn thành</option><option value="history">Lịch sử đã xong / đã đóng</option><option value="review">Cần kiểm tra</option><option value="not_started">Chưa bắt đầu</option><option value="running">Đang chờ / chạy</option></select><div id="layout"><section id="list"></section><section id="detail">Chọn hồ sơ để xem nguồn và điều phối.</section></div>
+<script>
+let rows=[],history=[],csrf='',selected='';const embedded=new URLSearchParams(location.hash.slice(1)).get('brief');const labels={review:'Cần kiểm tra',not_started:'Chưa bắt đầu',done:'Hoàn tất',queued:'Chờ xử lý',reading:'Đang đọc',awaiting_upload:'Chờ lấy nguồn',planning:'Đang phân tích',scheduled:'Đã xếp hàng',exporting:'Đang xuất',publishing:'Đang gửi preview',uncertain:'Chưa rõ kết quả',archived:'Đã đóng',superseded:'Đã thay thế'},busy=['scheduled','planning','awaiting_upload','queued','reading','exporting','publishing','uncertain'];
+const $=id=>document.getElementById(id);function el(t,text){let e=document.createElement(t);e.textContent=text;return e}async function api(path,options){let r=await fetch(path,options),d=await r.json();if(!r.ok)throw Error(d.detail||'Không kết nối được');return d}
+function formatCreated(value){const n=Number(value);return Number.isFinite(n)&&n>0?new Intl.DateTimeFormat('vi-VN',{timeZone:'Asia/Ho_Chi_Minh',day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).format(new Date(n*1000)):'Chưa có thời gian'}
+function render(){let q=$('search').value.toLowerCase(),f=$('filter').value;$('list').replaceChildren();for(let x of (f==='history'?history:rows)){if(!(x.title+' '+x.reason).toLowerCase().includes(q))continue;if(f==='review'&&!['review','uncertain'].includes(x.state))continue;if(f==='not_started'&&x.state!==f)continue;if(f==='running'&&!busy.includes(x.state))continue;let a=el('article',''),b=el('button','Xem / điều phối');a.append(el('h3',x.title),el('p','Tạo hồ sơ: '+formatCreated(x.created)+' (giờ Việt Nam)'),el('p',(x.state==='collecting_sources'?'Đang gom nguồn':x.state==='waiting_sources'?'Chờ đủ nguồn':labels[x.state]||x.state)),el('p',x.reason||''));b.onclick=()=>show(x.id);a.append(b);$('list').append(a)}}
+async function refresh(){try{let [s,d]=await Promise.all([api('/api/status'),api('/api/dispatch')]);rows=d.pending;history=d.history||[];render();$('summary').textContent=rows.length+' hồ sơ chưa hoàn thành · '+d.completed+' hồ sơ hoàn thành/đã đóng được ẩn (trong '+d.limit+' hồ sơ gần nhất) · Mới nhất ở trên — theo thời gian tạo hồ sơ';$('status').replaceChildren();for(let c of s.cards)$('status').append(el('p',c.name+' ['+c.state+']: '+c.detail));$('error').textContent=Date.now()/1000-s.updated>90?'Dữ liệu trạng thái đã cũ':''}catch(e){$('error').textContent=e.message}}
+async function show(id){selected=id;let b=$('detail');b.textContent='Đang đọc…';try{let d=await api('/api/dispatch/'+id);if(selected!==id)return;b.replaceChildren(el('h2',d.title));if(d.sample_only){b.append(el('p','Lên mẫu · Không tạo đơn ERP · Chỉ duyệt nội bộ'));for(const r of d.requirements||[])b.append(el('p',typeof r==='string'?r:r.text||''));b.append(el('h3','Tiến trình và nguyên nhân'));for(const j of d.jobs||[])b.append(el('p',(labels[j.state]||j.state)+' · '+(j.reason||'')),el('p',j.path||''));return;}for(let i of d.images){if(!['image/png','image/jpeg','image/webp'].includes(i.mime_type))continue;let img=document.createElement('img');img.src='data:'+i.mime_type+';base64,'+i.data;b.append(img)}let req=el('details','');req.append(el('summary','Nội dung đã tổng hợp'));for(let x of d.requirements)req.append(el('p',x.text||''));b.append(req,el('p','Thiếu đã ghi nhận: '+(d.missing.join(', ')||'Không có')),el('h3','Tiến trình và nguyên nhân'));for(let j of d.jobs)b.append(el('p',j.kind+' — '+(labels[j.state]||j.state)+(j.reason?' · '+j.reason:'')+(j.path?' · '+j.path:'')));managementPanel(d,b);flowEvidence(d,b);diagnostics(d,b);b.append(el('h3','Yêu cầu xử lý mới'));let source=document.createElement('select');source.style.width='100%';for(let a of d.assets)if(a.exportable){let o=el('option',a.name);o.value=a.sha256;source.append(o)}if(!source.options.length&&d.image_context==='standalone_artwork'){let o=el('option','Ảnh artwork riêng trong hồ sơ');o.value='';source.append(o)}b.append(el('p','Chọn đúng file nguồn:'),source);nativePanel(d,b,source);let note=document.createElement('textarea');note.placeholder='Ghi yêu cầu: artwork/vị trí cần lấy, kích thước, điều cần chỉnh so với lần trước…';b.append(el('p','Yêu cầu của anh (bắt buộc):'),note,el('p','Chạy phân tích lại và xuất nếu đủ điều kiện. Thay màu/vẽ lại chưa hỗ trợ sẽ báo kiểm tra, không tự coi là đã sửa xong.'));let submit=el('button','Phân tích và xuất bản mới'),msg=el('p','');submit.disabled=!source.options.length||!d.current||d.jobs.some(x=>busy.includes(x.state));if(submit.disabled)b.append(el('p','Chưa thể chạy thêm: cần nguồn phù hợp, hồ sơ hiện tại và không có lượt đang chạy/chưa rõ kết quả.'));submit.onclick=async()=>{if(note.value.trim().length<5){msg.textContent='Hãy ghi yêu cầu cụ thể.';return}submit.disabled=true;try{let x=await api('/api/dispatch/'+id,{method:'POST',headers:{'Content-Type':'application/json','X-CSRF':csrf},body:JSON.stringify({note:note.value,sha256:source.value})});msg.textContent=x.message;refresh()}catch(e){msg.textContent=e.message;submit.disabled=false}};b.append(submit,msg)}catch(e){b.textContent=e.message}}
+const FLOW_AUDITS={};
+function flowEvidence(d,b){
+ const roots=(d.native||[]).filter(x=>x.auto_context===x.id&&x.scan);
+ if(!roots.length)return;
+ const section=el('section','');section.className='flow-evidence';section.append(el('h3','Luồng theo từng bước — đối chiếu bằng chứng'));
+ const chooser=el('select','');chooser.style.width='100%';for(const x of roots){const op=el('option',(x.asset?.name||'Nguồn')+' · '+x.id.slice(0,12)+' · '+(x.ai_calls?.artboard_regions_v5_partial?.model||'Model không được lưu'));op.value=x.id;chooser.append(op)}
+ const content=el('div','');section.append(chooser,content);b.append(section);
+ function picture(parent,data,label){if(!data)return;const fig=el('figure','');fig.style.margin='8px 0';const im=el('img','');im.src='data:image/png;base64,'+data;im.alt=label;im.style.cssText='max-width:100%;width:auto;max-height:650px;background:#777;margin:0';fig.append(im,el('figcaption',label));parent.append(fig)}
+ function draw(){content.replaceChildren();const x=roots.find(v=>v.id===chooser.value),children=(d.native||[]).filter(v=>v.id!==x.id&&v.auto_context===x.id),audit=FLOW_AUDITS[x.id];
+ function step(title,status){const box=el('article','');box.style.cssText='border-left:4px solid #4778be;margin:0 0 12px 12px;padding:14px;background:#f8fafc';box.append(el('h4',title),el('p',status));content.append(box);return box}
+ if(audit){const note=el('p',audit.summary);note.className='error';content.append(note,el('p','Ghi nhận kiểm tra ngày 24/10/2026. Đây là kết luận đối chiếu, không tự sửa trạng thái hay chạy lại hồ sơ.'))}
+ let s=step('1. Nguồn và maket',x.asset?.name||'Chưa có nguồn');s.append(el('p','SHA256: '+(x.asset?.sha256||'—')));for(const im of d.images||[])picture(s,im.data,'Ảnh nguồn trong hồ sơ; xem bước 2 để biết ảnh artboard thực sự gửi AI.');
+ s=step('2. Illustrator đọc artboard',`${x.scan.artboards?.length||0} artboard · ${x.scan.candidates?.length||0} đối tượng metadata; không phải số ảnh gửi AI.`);
+ for(const board of x.scan.artboards||[])s.append(el('p',`Artboard ${board.index}: ${Number(board.width_cm).toFixed(2)} × ${Number(board.height_cm).toFixed(2)} cm; bounds ${JSON.stringify(board.bounds)}`));
+ s=step('3. AI khoanh vùng trên ảnh artboard',Object.entries(x.ai_calls||{}).filter(([k])=>k.startsWith('artboard_regions')).map(([k,v])=>`${v.model||'Model cũ không ghi'} · ${v.state} · ${v.image_count??'không ghi'} ảnh`).join('; '));
+ for(const board of x.scan.artboards||[]){if(!board.preview)continue;const wrap=el('div','');wrap.style.cssText='position:relative;max-width:800px';const im=el('img','');im.src='data:image/png;base64,'+board.preview;im.style.cssText='display:block;width:100%;max-width:100%;max-height:none;margin:0';wrap.append(im);for(const region of x.artboard_regions||[]){if(region.artboard_index!==board.index)continue;const q=region.box,mark=el('div','');mark.style.cssText=`position:absolute;border:3px solid red;box-sizing:border-box;left:${q[0]*100}%;top:${q[1]*100}%;width:${(q[2]-q[0])*100}%;height:${(q[3]-q[1])*100}%`;wrap.append(mark)}s.append(wrap)}
+ for(const r of x.artboard_regions||[])s.append(el('p',r.description+' · box '+JSON.stringify(r.box)));
+ s=step('4. Lọc group theo vùng',x.maket_filter?`${x.maket_filter.total} đối tượng → ${x.maket_filter.kept?.length||0} ứng viên: ${(x.maket_filter.kept||[]).join(', ')}`:x.error||'Chưa đến bước lọc');
+ for(const id of x.maket_filter?.kept||[]){const c=x.scan.candidates.find(v=>v.id===id);if(c)picture(s,c.preview,`${id} · ${c.kind} · ${Number(c.width_cm).toFixed(3)} × ${Number(c.height_cm).toFixed(3)} cm`)}
+ s=step('5. AI quyết định chọn đối tượng',x.ai_calls?.selection_partial_v1?`${x.ai_calls.selection_partial_v1.model||'Model cũ không ghi'} · ${x.ai_calls.selection_partial_v1.state} · ${x.ai_calls.selection_partial_v1.image_count??'không ghi'} ảnh`:'Chưa chạy chọn group');
+ for(const face of x.auto_plan?.faces||[]){s.append(el('p',`${face.side}: group ${(face.candidate_ids||[]).join(', ')} · ngang ${face.width_cm} cm; ${face.explanation||''}`));if(face.maket_region)s.append(el('p','AI mô tả maket: '+face.maket_region.description));}
+ s=step('6. Xuất PNG / AI / TIFF',children.length?children.map(v=>`${v.id.slice(0,12)}: ${v.state} · ${(v.candidate_ids||[]).join(', ')}`).join('; '):'Chưa tạo lượt xuất');
+ if(audit?.output)picture(s,audit.output,'Ảnh PNG thực xuất — bằng chứng lượt thử này');if(audit?.exportNote)s.append(el('p',audit.exportNote));
+ s=step('7. Kiểm tra sau xuất và kết luận',audit?.verdict||'Xem kết quả AI bên dưới; trạng thái máy không thay thế duyệt của nhân viên.');
+ for(const child of children){for(const [key,v] of Object.entries(child.ai_calls||{})){if(!key.startsWith('png'))continue;const det=el('details','');det.append(el('summary',`${key} · ${v.model||'Model cũ không ghi'} · ${v.state}`));const pre=el('pre',JSON.stringify(v.result,null,2));pre.style.cssText='white-space:pre-wrap;overflow-wrap:anywhere';det.append(pre);s.append(det)}if(child.error){let p=el('p',child.error);p.className='error';s.append(p)}}
+ if(audit?.history){s=step('8. So sánh lịch sử và hướng điều tra',audit.history);if(audit.previousIds)s.append(el('p','Lượt đối chiếu: '+audit.previousIds));}
+ }
+ chooser.onchange=draw;draw();
+}
+
+function diagnostics(d,b){
+ const section=el('section','');section.append(el('h3','Chi tiết đọc nguồn / chọn artwork'));
+ section.append(el('p','Artboard là khổ trang; cụm artwork là đối tượng cần in. Bản đọc mới ghi riêng artboard và cụm artwork. Không suy ra khổ trang từ kích thước cụm.'));
+ for(const entry of d.print_catalogs||[]){
+  const box=el('details','');box.open=true;box.append(el('summary','Phân loại artboard / phần cần in: '+entry.file));
+  const cat=entry.catalog;
+  box.append(el('p','Đã đọc '+cat.source_pages.length+' trang nguồn. Phân loại chưa đồng nghĩa đã xuất.'));
+  for(const b of cat.boards||[])box.append(el('p','Trang '+b.page+' · '+b.role+' · '+b.model_codes.join(', ')+' — '+b.description));
+  for(const m of cat.models||[]){box.append(el('h4',m.code));
+   for(const p of m.parts||[]){const card=el('div','');card.className='card';
+    card.append(el('strong',p.name+' · '+p.kind+' · '+p.status));
+    card.append(el('p','Trang: '+p.boards.join(', ')+' | Nền: '+p.background+' | Hướng: '+p.orientation));
+    card.append(el('p','Kích thước nguồn: '+p.dimensions+' | Chu kỳ: '+p.repeat));
+    card.append(el('p','Bước tiếp: '+p.next_step));
+    for(const issue of p.missing||[])card.append(el('p','Cần kiểm tra: '+issue));
+    card.append(el('small','Bằng chứng: '+p.sources.join(', ')));box.append(card);
+   }
+  }
+  for(const issue of cat.issues||[])box.append(el('p','Lưu ý: '+issue));section.append(box);
+ }
+ for(const check of d.source_checks||[]){let detail=el('details','');detail.append(el('summary','Phân tích nguồn: '+check.file+' · '+check.state));let pre=el('pre',JSON.stringify(check,null,2));pre.style.cssText='white-space:pre-wrap;overflow-wrap:anywhere';detail.append(pre);section.append(detail)}
+ const records=d.native||[];
+ if(!records.length)section.append(el('p','Chưa có kết quả đọc cụm Illustrator trong hồ sơ này. Xem tiến trình phía trên để biết bước trước đang chờ hay lỗi; không đồng nghĩa file không có artwork.'));
+ for(const x of records){
+  const panel=el('details','');panel.open=!!x.error||x.auto_status==='review'||!!x.region_correction_audit;
+  panel.append(el('summary',(x.asset?.name||'Nguồn chưa có tên')+' · '+x.state+' · '+(x.auto_status||'Chưa có quyết định AI')));
+  panel.append(el('p','Mã lượt: '+x.id),el('p','Mã nguồn: '+(x.asset?.sha256||'Chưa ghi nhận')));
+  if(x.error){let err=el('p','Lý do chặn: '+x.error);err.className='error';panel.append(err)}
+  if(x.blocked_parts?.length)panel.append(el('p','Xuất từng phần — phần cần bổ sung (không chặn các vị trí đủ nguồn): '+x.blocked_parts.join('; ')));
+  if(x.region_correction_audit){
+   panel.append(el('h3','Dấu vết lần chọn ban đầu → sau can thiệp'),el('p','ĐỎ: vùng AI chọn ban đầu. XANH: vùng đã sửa. Đây là lần có can thiệp, không phải kết quả tự động hoàn toàn.'));
+   for(const original of x.region_correction_audit.original?.result?.regions||[]){
+    const board=x.scan?.artboards?.find(a=>a.index===original.artboard_index);if(!board?.preview)continue;
+    const wrap=el('div','');wrap.style.cssText='position:relative;width:100%;max-width:700px';const img=el('img','');img.src='data:image/png;base64,'+board.preview;img.style.cssText='display:block;width:100%;max-width:100%;max-height:none;margin:0';wrap.append(img);
+    for(const [region,color] of [[original,'red'],...(x.artboard_regions||[]).filter(r=>r.artboard_index===board.index).map(r=>[r,'#00a044'])]){const q=region.box;const box=el('div','');box.style.cssText=`position:absolute;border:3px solid ${color};box-sizing:border-box;left:${q[0]*100}%;top:${q[1]*100}%;width:${(q[2]-q[0])*100}%;height:${(q[3]-q[1])*100}%`;wrap.append(box)}
+    panel.append(wrap);
+    const [l,t,r,b]=board.bounds,w=r-l,h=t-b,q=original.box,tol=Math.min(w,h)*.01;
+    const inside=(x.scan.candidates||[]).filter(c=>c.bounds[0]>=l+q[0]*w-tol&&c.bounds[2]<=l+q[2]*w+tol&&c.bounds[1]<=t-q[1]*h+tol&&c.bounds[3]>=t-q[3]*h-tol);
+    const roots=inside.filter(c=>!inside.some(a=>a.id!==c.id&&c.id.startsWith(a.id+'.')));
+    panel.append(el('p',`1. Illustrator đọc ${x.scan.candidates.length} đối tượng (metadata, không phải số ảnh gửi AI). 2. Vùng AI ban đầu giữ ${roots.length} ứng viên. 3. Giới hạn chọn chi tiết: 12 ứng viên.`));
+    const detail=el('details','');detail.append(el('summary','Xem các đối tượng bộ lọc ban đầu giữ lại'));for(const c of roots)detail.append(el('p',`${c.id} · ${c.kind} · ${c.width_cm.toFixed(3)} × ${c.height_cm.toFixed(3)} cm`));panel.append(detail);
+   }
+   panel.append(el('p','Nguyên nhân: bộ lọc yêu cầu toàn bộ bounds nằm trong vùng AI. Vùng lệch có thể loại group cha đầy đủ nhưng giữ các nét con.'));
+   for(const id of x.maket_filter?.kept||[]){const c=x.scan?.candidates?.find(v=>v.id===id);if(!c)continue;panel.append(el('p',`Sau chỉnh: ${id} · ${c.kind} · ${c.width_cm.toFixed(3)} × ${c.height_cm.toFixed(3)} cm · chữ sống: ${c.live_text_count}`));const im=el('img','');im.src='data:image/png;base64,'+c.preview;im.style.background='#777';im.alt='Group đầy đủ sau chỉnh '+id;panel.append(im)}
+  }
+  for(const region of x.artboard_regions||[]){const board=x.scan?.artboards?.find(a=>a.index===region.artboard_index);if(board?.preview){let wrap=el('div','');wrap.style.cssText='position:relative;width:100%';let img=el('img','');img.src='data:image/png;base64,'+board.preview;img.style.cssText='display:block;max-width:100%;max-height:none;margin:0;width:100%';wrap.append(img);let mark=el('div','');let q=region.box;mark.style.cssText='position:absolute;border:2px solid red;box-sizing:border-box;left:'+(q[0]*100)+'%;top:'+(q[1]*100)+'%;width:'+((q[2]-q[0])*100)+'%;height:'+((q[3]-q[1])*100)+'%';wrap.append(mark);panel.append(el('p','Vùng chọn trên artboard: '+region.description),wrap)}}
+  if(x.maket_filter){panel.append(el('p','Đối chiếu maket: '+x.maket_filter.total+' cụm → giữ '+x.maket_filter.kept.length));let excluded=el('details','');excluded.append(el('summary','Cụm đã loại và lý do'));for(const item of x.maket_filter.excluded)excluded.append(el('p',item.id+': '+item.reason));panel.append(excluded)}
+  for(const region of x.maket_regions||[]){let compare=el('div','');compare.append(el('h4','Vùng maket ↔ artwork: '+region.side),el('p',region.description));let image=el('img','');image.src='data:image/png;base64,'+region.preview;image.alt='Vùng maket AI xác định';compare.append(image);for(const id of region.candidate_ids){let c=x.scan?.candidates?.find(c=>c.id===id);if(c){let img=el('img','');img.src='data:image/png;base64,'+c.preview;img.style.background='#777';img.alt='Cụm '+id;compare.append(img,el('span',id))}}panel.append(compare)}
+  const scan=x.scan;
+  if(scan){for(const board of scan.artboards||[])panel.append(el('p','Artboard '+board.index+' '+board.name+': '+Number(board.width_cm).toFixed(2)+' × '+Number(board.height_cm).toFixed(2)+' cm'));
+   panel.append(el('p','Đã đọc '+(scan.candidates||[]).length+' cụm · Danh sách đầy đủ: '+(scan.truncated?'KHÔNG — bị giới hạn, có thể chưa chứa artwork cần in':'Không bị đánh dấu cắt bớt')));
+   if(scan.truncated)panel.append(el('p','Cần kiểm tra các cụm đã có bên dưới. Không nên chạy lại y nguyên nhiều lần: cần sửa cách đọc/phân nhóm hoặc chọn nguồn chỉ chứa artwork cần in.'));
+   panel.append(el('p','Font thiếu: '+((scan.missing_fonts||[]).join(', ')||'Không được ghi nhận')));
+   let table=el('table','');table.style.cssText='width:100%;border-collapse:collapse;font-size:13px';
+   let head=el('tr','');for(const title of ['ID / loại','Tên','Ngang × cao (cm)','Chữ sống'])head.append(el('th',title));table.append(head);
+   for(const c of scan.candidates||[]){let row=el('tr','');for(const v of [c.id+' / '+c.kind,c.name||'—',Number(c.width_cm).toFixed(2)+' × '+Number(c.height_cm).toFixed(2),String(c.live_text_count??'Chưa rõ')]){let cell=el('td',v);cell.style.cssText='border:1px solid #ddd;padding:5px;word-break:break-word';row.append(cell)}table.append(row)}panel.append(table);
+  }else panel.append(el('p','Lượt này không chứa danh sách cụm; xem lượt đọc nguồn tương ứng.'));
+  panel.append(el('p','Cụm đã chọn: '+((x.candidate_ids||[]).join(', ')||'Chưa ghi nhận')+' · Vị trí: '+(x.side||'Chưa ghi nhận')+' · Ngang xuất: '+(x.width_cm?x.width_cm+' cm':'Chưa xác định')));
+  for(const [label,value] of [['Giải thích lựa chọn AI',x.decision_summary],['Yêu cầu đã gửi',x.note],['Căn cứ kích thước / nguồn',x.auto_context]])if(value){let a=el('details','');a.append(el('summary',label));let pre=el('pre',typeof value==='string'?value:JSON.stringify(value,null,2));pre.style.cssText='white-space:pre-wrap;overflow-wrap:anywhere';a.append(pre);panel.append(a)}
+  section.append(panel);
+ }
+ b.append(section);
+}
+function nativePanel(d,b,source){
+ const box=el('section','');b.append(box);let selectedSide='';
+ const draw=()=>{
+  box.replaceChildren(el('h3','Cụm artwork Illustrator'));
+  let scans=(d.native||[]).filter(x=>x.asset.sha256===source.value),scan=scans.find(x=>x.state==='candidates_ready');
+  const message=el('p','');
+  async function send(data,button){button.disabled=true;try{let r=await api('/api/dispatch/'+d.id,{method:'POST',headers:{'Content-Type':'application/json','X-CSRF':csrf},body:JSON.stringify({...data,sha256:source.value})});message.textContent=r.message;refresh()}catch(e){message.textContent=e.message;button.disabled=false}}
+  const states={candidates_ready:'Đã đọc các cụm',scan_queued:'Chờ đọc cụm',scan_running:'Illustrator đang đọc cụm',render_queued:'Chờ xuất PNG',render_running:'Illustrator đang xuất PNG',png_check_queued:'AI đang kiểm tra PNG với nguồn',png_ready:'PNG đã xong — xem bước TIFF ở tiến trình phía trên',review:'Cần kiểm tra',superseded:'Đã có phiên bản mới'};let reload=el('button','Làm mới hồ sơ');reload.onclick=()=>show(d.id);box.append(reload);
+  for(let x of scans)box.append(el('p',(states[x.state]||x.state)+(x.auto_selected?' · AI tự chọn '+(x.side||'front'):'')+(x.auto_status?' · '+({waiting_scan:'Chờ đọc cụm',planning:'AI đang chọn',selected:'AI đã chọn',waiting_verify:'Chờ kiểm chứng PNG',verifying:'Đang kiểm chứng PNG',verified:'PNG đã đạt kiểm tra',review:'Cần kiểm tra'}[x.auto_status]||x.auto_status):'')+(x.error?' — '+x.error:'')));
+  for(let x of scans)if(x.decision_summary){let audit=el('details','');audit.append(el('summary','Kết quả đối chiếu lại AI · '+(x.side||'chọn artwork')));for(let v of Object.values(x.decision_summary))audit.append(el('p',v));box.append(audit)}
+  if(!scan){let button=el('button','Đọc các cụm bằng Illustrator');button.disabled=!source.value||scans.some(x=>x.state.includes('running')||x.state.includes('queued'));button.onclick=()=>send({action:'native_scan'},button);box.append(button,message);return}
+  let warnings=scan.scan.missing_fonts||[];box.append(el('p',warnings.length?'Thiếu font nguồn: '+warnings.join(', ')+'. Cụm có chữ sống sẽ bị chặn xuất; cụm outline/ảnh vẫn có thể làm mẫu.':'Không phát hiện font nguồn thiếu theo tên PostScript.'));
+  if(scan.scan.truncated)box.append(el('p','Danh sách vượt giới hạn; kết quả đọc cũ bị cắt bớt. Chưa coi là đã đọc đủ.'));
+  box.append(el('p','Chọn một cụm đầy đủ hoặc các cụm con cần ghép. Không chọn đồng thời cha/con. Ảnh trên nền xám để thấy chi tiết trắng.'));
+  let grid=el('div','');grid.style.cssText='display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px';let checks=[];
+  let exports=scans.filter(x=>x.candidate_ids);let sides=[...new Set(exports.map(x=>x.side||'front'))];if(!sides.length)sides=['front'];if(!selectedSide)selectedSide=sides[0];let sideSelect=document.createElement('select');for(let side of sides){let o=el('option',side);o.value=side;sideSelect.append(o)}sideSelect.value=selectedSide;sideSelect.onchange=()=>{selectedSide=sideSelect.value;draw()};box.append(el('p','Vị trí đang xem / chọn lại:'),sideSelect);let previous=exports.find(x=>(x.side||'front')===selectedSide);
+  for(let c of [...scan.scan.candidates].sort((a,b)=>Number(!!previous?.candidate_ids.includes(b.id))-Number(!!previous?.candidate_ids.includes(a.id))||Number(b.kind==='GroupItem')-Number(a.kind==='GroupItem'))){let label=el('label',''),check=document.createElement('input'),img=document.createElement('img');check.type='checkbox';check.value=c.id;check.checked=!!previous?.candidate_ids.includes(c.id);checks.push(check);img.src='data:image/png;base64,'+c.preview;img.style.cssText='display:block;max-width:100%;height:140px;margin:auto;background:#aaa';label.style.cssText='border:1px solid #ccc;padding:8px';label.append(check,el('span',' '+c.id+' · '+c.kind),img,el('small',c.width_cm.toFixed(2)+' × '+c.height_cm.toFixed(2)+' cm · chữ sống: '+c.live_text_count));grid.append(label)}
+  box.append(grid);let width=document.createElement('input');width.type='number';width.step='.01';width.min='.1';width.max='160';width.value=previous?.width_cm||'';let note=document.createElement('textarea');note.placeholder='Căn cứ kích thước / lựa chọn cụm; chỉ xuất nguyên artwork, chưa chỉnh màu.';note.value=previous?.note||'';box.append(el('p','Chiều ngang xuất (cm); chiều cao giữ đúng tỷ lệ:'),width,el('p','Ghi chú đối chiếu:'),note);
+  let button=el('button','Xuất PNG/TIFF các cụm đã chọn');button.onclick=()=>send({action:'native_export',scan_id:scan.id,side:selectedSide,candidate_ids:checks.filter(x=>x.checked).map(x=>x.value),width_cm:Number(width.value),note:note.value},button);box.append(button,message);
+ };source.addEventListener('change',draw);draw();
+}
+
+api('/api/session').then(d=>{csrf=d.csrf;refresh();if(embedded&&/^[a-f0-9]{64}$/.test(embedded)){document.querySelector('h1').textContent='Điều phối hồ sơ của đơn';$('list').style.display='none';$('search').style.display='none';$('filter').style.display='none';$('layout').style.display='block';show(embedded)}});
+async function managementSettings(){
+ const box=$('management-settings');box.textContent='Đang đọc cấu hình…';
+ try{const d=await api('/api/dispatch/settings'),c=d.config;box.replaceChildren(el('h3','API và quy tắc xuất file · phiên bản '+c.revision));
+ const form=el('div',''),controls={};
+ function input(label,value,type='number'){const x=el('input','');x.type=type;x.value=value;form.append(el('p',label),x);return x}
+ const enabled=input('Cho phép gọi AI xuất file',true,'checkbox');enabled.checked=c.enabled;
+ const cache=input('Dùng cache kết quả AI đúng cùng đầu vào',true,'checkbox');cache.checked=c.cache_enabled;
+ const tokens=input('Giới hạn token đầu ra mỗi lượt',c.max_output_tokens);
+ const sourceWait=input('Chờ cả đợt gửi của nhóm trước khi xuất (phút, 1–120)',c.source_wait_minutes??15);
+ form.append(el('p','Tính từ tin/file nguồn cuối của từng nhóm. Hết thời gian chờ mới ghép phiếu và thiết kế theo mã mẫu. Mẫu đủ nguồn xuất trước; mẫu thiếu file tiếp tục chờ.'));
+ const limit=input('Giới hạn lượt gọi trong 24 giờ',c.daily_call_limit),mouth=input('Miệng gấp khi phiếu để trống (cm)',c.rules.mouth_blank_cm),extra=input('Ô trắng nền sọc: cộng tổng bao nhiêu bề rộng sọc',c.rules.white_backing_extra_stripes);
+ for(const [name,route] of Object.entries(c.stages)){const row=el('p',({classify:'Phân loại',localize:'Khoanh vùng',select:'Chọn group',layout:'Dàn trang',verify:'Kiểm tra',other:'Bước khác'}[name]||name)+' ');controls[name]={};for(const key of ['primary','fallback']){const select=el('select','');for(const m of ['','gemini-2.5-pro','gemini-2.5-flash']){const option=el('option',m||(key==='primary'?'Giữ model hiện có':'Không đổi model'));option.value=m;select.append(option)}select.value=route[key];controls[name][key]=select;row.append(select)}const attempts=el('select','');for(const n of [1,2]){const opt=el('option',n+' lượt tối đa');opt.value=n;attempts.append(opt)}attempts.value=route.attempts;controls[name].attempts=attempts;row.append(attempts);const active=el('input','');active.type='checkbox';active.checked=route.enabled;controls[name].enabled=active;row.append(active);form.append(row)}
+ const message=el('p',''),save=el('button','Lưu phiên bản cấu hình');save.onclick=async()=>{save.disabled=true;try{const stages={};for(const [k,v] of Object.entries(controls))stages[k]={primary:v.primary.value,fallback:v.fallback.value,attempts:Number(v.attempts.value),enabled:v.enabled.checked};await api('/api/dispatch/settings',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF':csrf},body:JSON.stringify({expected_revision:c.revision,source_wait_minutes:Number(sourceWait.value),enabled:enabled.checked,cache_enabled:cache.checked,max_output_tokens:Number(tokens.value),daily_call_limit:Number(limit.value),rules:{mouth_blank_cm:Number(mouth.value),white_backing_extra_stripes:Number(extra.value)},stages})});await managementSettings()}catch(e){message.textContent=e.message;save.disabled=false}};
+ const history=el('select','');for(const r of d.revisions){const o=el('option','Cấu hình '+r.id);o.value=r.id;history.append(o)}const restore=el('button','Khôi phục cấu hình đã chọn');restore.onclick=async()=>{try{await api('/api/dispatch/settings',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF':csrf},body:JSON.stringify({expected_revision:c.revision,restore_revision:Number(history.value)})});managementSettings()}catch(e){message.textContent=e.message}};
+ box.append(form,save,history,restore,message,el('p','Fallback chỉ cho lỗi kết nối/hạn mức/model không khả dụng; không dùng để bỏ qua lỗi kích thước hoặc thiếu nguồn.'),el('p',d.cost_note));
+ const rules=el('details','');rules.append(el('summary','Quy tắc đang chạy · '+d.engine_version));for(const rule of d.rules)rules.append(el('p',rule.id+' — '+rule.when+' → '+rule.action));box.append(rules);
+ const logs=el('details','');logs.append(el('summary','100 lượt API gần nhất'));for(const call of d.calls){const usage=JSON.parse(call.usage||'{}');logs.append(el('p',`${new Date(call.started*1000).toLocaleString()} · ${call.stage} · ${call.job_id?call.job_id.slice(0,12):'chưa gắn job'} · ${call.model} · ${call.state} · ${Number(call.elapsed).toFixed(1)}s · token ${usage.totalTokenCount??'không có'} ${call.error||''}`))}box.append(logs);
+ }catch(e){box.textContent=e.message}
+}
+function managementPanel(d,b){
+ const m=d.management;if(!m)return;const section=el('section','');section.append(el('h3','Phương án / mẫu chuẩn / chạy lại đúng bước'));b.append(section);
+ section.append(el('p','Khớp chính xác đã duyệt: dùng lại phương án, vẫn xác minh bản xuất mới. Gần giống: phân tích lại nguồn mới, không sao chép ID group/cữ chỉ vì giống tên. Thay đổi cữ dùng nút bên dưới; thay artwork/nền dùng bước phân tích nguồn.'));
+ if(!Array.isArray(m.versions)||!m.versions.length){section.append(el('p','Chưa có phương án. Cần đọc đủ nguồn và phân tích trước; không đoán mẫu chuẩn chỉ từ tên file.'));return}
+ const seen=new Set();for(const v of m.versions){if(seen.has(v.job_id))continue;seen.add(v.job_id);
+  const card=el('details','');card.open=seen.size===1;card.append(el('summary',`${v.kind} · ${v.state} · quy tắc ${v.rule_version} · ${v.job_id.slice(0,10)}`));
+  const plan=v.plan;for(const [i,p] of (plan.panels||plan.faces||[]).entries()){card.append(el('h4',`${i+1}. ${p.name||p.side||'Phần in'} · ${p.construction||p.product_kind||''}`),el('p',`Khổ: ${JSON.stringify(p.output_cm||[p.width_cm,p.height_cm])} · nền ${p.background_mode||'theo nguồn'} · group nền ${p.background_object_id||'không'}`));for(const [j,c] of (p.components||[]).entries()){card.append(el('p',`${c.side}: group ${(c.object_ids||[]).join(', ')} · rộng ${c.width_cm}cm · cữ ${c.y_cm}cm · xoay ${c.rotation}° · căn ${c.horizontal_alignment}`));if(v.kind==='jpg_exports'){const x=el('input','');x.type='number';x.step='.01';x.value=c.y_cm;x.dataset.panel=i;x.dataset.component=j;x.className='plan-cue';card.append(el('span','Cữ mới (cm): '),x)}}}
+  const raw=el('details','');raw.append(el('summary','Phương án đầy đủ'),el('pre',JSON.stringify(plan,null,2)));raw.lastChild.style.cssText='white-space:pre-wrap;overflow-wrap:anywhere';card.append(raw);
+  card.append(el('h4','Đối chiếu mẫu đã duyệt'));if(!v.matches.length)card.append(el('p','Chưa có mẫu chuẩn đủ căn cứ trong cùng nhóm. Không tự lấy mẫu từ nhóm khác.'));
+  for(const match of v.matches)card.append(el('p',`${match.match==='exact'?'Khớp chính xác':'Cùng cấu trúc / cần đối chiếu khác biệt'}: ${match.job_id.slice(0,12)} · nguồn ${match.source_same?'giống':'khác'} · quy tắc ${match.rules_same?'giống':'khác'} · thay đổi ${match.changed_fields.join(', ')||'khác bằng chứng đầu vào'}`));
+  const note=el('textarea','');note.placeholder='Căn cứ duyệt hoặc yêu cầu chạy lại';const msg=el('p','');card.append(note);
+  async function send(action,button,more={}){button.disabled=true;try{const result=await api('/api/dispatch/'+d.id,{method:'POST',headers:{'Content-Type':'application/json','X-CSRF':csrf},body:JSON.stringify({action,job_id:v.job_id,kind:v.kind,note:note.value,expected_plan:v.plan_hash,...more})});msg.textContent=result.message;await show(d.id)}catch(e){msg.textContent=e.message;button.disabled=false}}
+  const approve=el('button',v.approved?'Đã duyệt làm mẫu chuẩn':'Duyệt làm mẫu chuẩn');approve.disabled=!d.current||v.approved||v.state!=='done';approve.onclick=()=>send('approve_plan',approve);card.append(approve);
+  if(v.kind==='jpg_exports'){const retry=el('button','Xuất lại từ phương án (không phân tích AI lại)');retry.disabled=!d.current||!['done','review'].includes(v.state)||d.jobs.some(j=>busy.includes(j.state));retry.onclick=()=>{const changes=[...card.querySelectorAll('.plan-cue')].map(x=>({panel:Number(x.dataset.panel),component:Number(x.dataset.component),y_cm:Number(x.value)}));send('retry_export',retry,{adjustments:changes})};card.append(retry)}else card.append(el('p','PET: chọn lại group hoặc kích thước ở bảng Illustrator bên dưới để chạy lại từ bước PNG/TIFF.'));
+  card.append(msg);section.append(card);
+ }
+ const history=el('details','');history.append(el('summary','Lịch sử điều chỉnh'));for(const a of m.history)history.append(el('p',new Date(a.created*1000).toLocaleString()+' · '+a.action+' · '+a.payload));section.append(history);
+}
+
+</script></html>
+
+<script>
+async function refreshZaloSender(){const box=document.getElementById('zalo-sender');try{const r=await fetch('/api/status');if(!r.ok)throw Error();const all=await r.json(),s=all.zalo_sender;if(!s)throw Error();box.replaceChildren();box.style.cssText='padding:16px;margin:16px 0;border:2px solid '+(s.state==='ok'?'#16834b':s.state==='retry'?'#2563eb':'#c77700')+';border-radius:10px;background:white';const add=(tag,text)=>{const n=document.createElement(tag);n.textContent=text;box.append(n)};add('h3','Bộ gửi Zalo — '+s.label);add('p',s.detail);add('p',s.action);add('p','Cập nhật: '+new Date(s.updated_at*1000).toLocaleString('vi-VN',{timeZone:'Asia/Ho_Chi_Minh'}));if(Date.now()/1000-all.updated>90)add('p','DỮ LIỆU GIÁM SÁT ĐÃ CŨ — kiểm tra dịch vụ điều phối.');for(const i of s.issues||[])add('p',i.state+' · '+i.detail+' · Mã: '+i.id);add('small','Chỉ giám sát. Không có nút gửi lại; giữ khóa chống gửi trùng.')}catch{box.textContent='Bộ gửi Zalo: chưa lấy được trạng thái — kiểm tra dịch vụ điều phối.'}}
+refreshZaloSender();setInterval(refreshZaloSender,20000);
+</script>
+<style>
+*{box-sizing:border-box}body{margin:0;padding:24px;background:#f3f6fa;font:14px/1.5 system-ui;color:#213047}button,input,select,textarea{font:inherit}button{padding:9px 14px;border-radius:8px}button:hover:not(:disabled){filter:brightness(.94)}button:focus-visible,summary:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid #93b8ff;outline-offset:2px}input,select,textarea{border:1px solid #cbd5e1;border-radius:8px;background:white;color:#213047}h1{font-size:26px;margin:0}h2{font-size:21px;margin:0 0 18px}h3{font-size:16px}p{line-height:1.55}summary{cursor:pointer;font-weight:600}pre{font-size:12px;max-width:100%;overflow:auto}.page-head{display:flex;align-items:center;justify-content:space-between;gap:16px}.page-head p{margin:4px 0;color:#64748b}.notice{font-size:12px;color:#64748b;margin:10px 0 18px}.metrics{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}.metric{background:white;color:#526078;border:1px solid #dbe3ed;text-align:left;min-width:130px}.metric strong{display:block;font-size:23px;color:#20334c}.metric[aria-pressed=true]{border-color:#2563eb;background:#edf4ff;color:#1d4ed8}.workspace{display:grid;grid-template-columns:minmax(290px,360px) minmax(0,1fr);gap:20px;align-items:start}.queue{min-width:0;background:white;border:1px solid #e1e7ef;border-radius:12px;overflow:hidden}.queue-head{padding:16px;border-bottom:1px solid #e5eaf1}.queue-head h2{font-size:16px;margin:0 0 12px}.queue-head input,.queue-head select{width:100%;margin-bottom:8px;padding:9px}.queue-meta{font-size:12px;color:#64748b}#layout{display:contents}#list{max-height:calc(100vh - 390px);min-height:240px;overflow:auto;padding:8px}#list article{padding:12px;margin:0 0 6px;border:1px solid transparent;border-radius:8px;background:#f8fafc}#list article.selected{background:#eef4ff;border-color:#8bb5ff}#list h3{font-size:14px;margin:0 0 7px;line-height:1.45}#list p{font-size:12px;margin:5px 0;color:#64748b}#list .reason{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}#list button{background:transparent;color:#245acc;padding:4px 0;font-size:12px;font-weight:600}.badge{display:inline-block;border-radius:5px;padding:3px 7px;font-size:11px;background:#e9edf3;color:#475569}.badge.review,.badge.uncertain{background:#fff0d6;color:#9a5700}.badge.waiting_sources,.badge.collecting_sources{background:#e0f2fe;color:#03607e}.badge.done{background:#dcfce7;color:#166534}#detail{padding:24px;border:1px solid #e1e7ef;border-radius:12px;min-height:430px;max-height:calc(100vh - 210px);overflow:auto}#detail>h2{padding-bottom:15px;border-bottom:1px solid #e5eaf1}.detail-tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:18px;position:sticky;top:-24px;background:white;padding:12px 0;z-index:2;border-bottom:1px solid #e5eaf1}.detail-tabs button{background:#f1f5f9;color:#526078}.detail-tabs button[aria-selected=true]{background:#245acc;color:white}.detail-pane[hidden]{display:none}.detail-pane>section{padding:0!important;border:0!important}.detail-pane details{padding:12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px}.detail-pane button{margin:4px}.detail-pane img{border:1px solid #e2e8f0;border-radius:8px;background:#f8fafc}.empty{padding:40px 15px;text-align:center;color:#64748b}.empty strong{display:block;color:#334155;font-size:18px;margin-bottom:8px}.technical{margin-top:20px;border-top:1px solid #dce3ed;padding-top:14px;color:#526078}.technical>summary{font-size:13px}#summary{font-size:12px;color:#64748b;margin:12px 0}#error:empty{display:none}#error:not(:empty){background:#fff1f2;padding:12px;border-radius:8px}#zalo-sender{padding:12px!important;border-width:1px!important;font-size:12px}#zalo-sender h3{margin:0;font-size:14px}#zalo-sender p{margin:6px 0}.back-list{display:none}#system-badge{font-size:12px;color:#526078}
+@media(min-width:1500px){body{max-width:1760px;margin:auto}.workspace{grid-template-columns:400px minmax(0,1fr)}}
+@media(max-width:850px){body{padding:16px}.workspace{display:block}#list{max-height:60vh}#detail{margin-top:14px;max-height:none;padding:16px}.detail-tabs{top:-16px}.metric{min-width:100px;flex:1;padding:8px}.metric strong{font-size:20px}.page-head{align-items:start}.page-head h1{font-size:22px}.back-list{display:inline-block;margin-bottom:14px;background:#eef4ff;color:#245acc}}
+</style>
+<script>
+// Presentation layer only: reuse existing detail controls and API handlers.
+(function(){
+const title=document.querySelector('h1'),intro=title.nextElementSibling,refreshButton=intro.nextElementSibling;
+const header=el('header','');header.className='page-head';const heading=el('div','');heading.append(title,el('p','Theo dõi nguồn, kiểm tra và điều phối xuất file'));const right=el('div','');right.append(refreshButton);header.append(heading,right);document.body.prepend(header);intro.className='notice';header.after(intro);
+const metrics=el('nav','');metrics.className='metrics';metrics.setAttribute('aria-label','Lọc hồ sơ theo trạng thái');intro.after(metrics);
+const settings=$('management-settings').parentElement,system=$('status').parentElement;
+const technical=el('details','');technical.className='technical';technical.append(el('summary','Hệ thống & cấu hình'),$('zalo-sender'),system,settings,$('audit-links'));
+const workspace=el('main','');workspace.className='workspace';const queue=el('aside','');queue.className='queue';queue.id='queue';const queueHead=el('div','');queueHead.className='queue-head';$('search').setAttribute('aria-label','Tìm hồ sơ');$('filter').setAttribute('aria-label','Lọc trạng thái hồ sơ');queueHead.append(el('h2','Danh sách hồ sơ'),$('search'),$('filter'));const count=el('div','');count.className='queue-meta';queueHead.append(count);queue.append(queueHead,$('list'));workspace.append(queue,$('detail'));metrics.after($('error'),workspace,$('summary'),technical);$('layout').remove();
+const blank=el('div','');blank.className='empty';blank.append(el('strong','Chọn hồ sơ để bắt đầu'),el('p','Xem nguồn, kiểm tra tiến trình và chọn thao tác trong từng mục.'));$('detail').replaceChildren(blank);
+const definitions=[['sample','Lên mẫu',x=>x.kind==='sample'],['all','Cần xử lý',x=>true],['review','Cần kiểm tra',x=>['review','uncertain'].includes(x.state)],['sources','Chờ nguồn',x=>['waiting_sources','collecting_sources'].includes(x.state)],['not_started','Chưa bắt đầu',x=>x.state==='not_started'],['running','Đang chờ / chạy',x=>busy.includes(x.state)],['history','Lịch sử',x=>true]];
+let sampleOption=el('option','Lên mẫu');sampleOption.value='sample';$('filter').append(sampleOption);
+let sourceOption=el('option','Chờ nguồn');sourceOption.value='sources';$('filter').append(sourceOption);
+render=function(){const q=$('search').value.toLocaleLowerCase('vi'),f=$('filter').value;metrics.replaceChildren();for(const [key,label,predicate] of definitions){const n=(key==='history'?history:rows).filter(predicate).length;const btn=el('button','');btn.className='metric';btn.setAttribute('aria-pressed',String(f===key));btn.append(el('strong',String(n)),el('span',label));btn.onclick=()=>{$('filter').value=key;render()};metrics.append(btn)}
+const match=definitions.find(d=>d[0]===f)?.[2]||(()=>true),items=(f==='history'?history:rows).filter(x=>match(x)&&(x.title+' '+(x.reason||'')).toLocaleLowerCase('vi').includes(q));count.textContent=items.length+' hồ sơ · Mới nhất trước';const list=$('list');list.replaceChildren();for(const x of items){const card=el('article','');card.dataset.id=x.id;card.classList.toggle('selected',x.id===selected);const state=el('span',x.state==='collecting_sources'?'Đang gom nguồn':x.state==='waiting_sources'?'Chờ đủ nguồn':labels[x.state]||x.state);state.className='badge '+x.state;const reason=el('p',x.reason||'Chưa có ghi chú xử lý');reason.className='reason';reason.title=x.reason||'';const open=el('button','Xem / điều phối');open.onclick=()=>show(x.id);card.append(el('h3',x.title),state,reason,el('p',formatCreated(x.created)),open);list.append(card)}if(!items.length){const empty=el('p','Không có hồ sơ phù hợp. Thử đổi bộ lọc hoặc từ khóa.');empty.className='empty';list.append(empty)}};
+const originalShow=show;show=async function(id){await originalShow(id);if(selected!==id)return;for(const card of $('list').children)card.classList.toggle('selected',card.dataset.id===id);const detail=$('detail');if(!detail.querySelector('h2'))return;const nodes=[...detail.children],tabs=el('div','');tabs.className='detail-tabs';tabs.setAttribute('role','tablist');tabs.setAttribute('aria-label','Chi tiết hồ sơ');const names=['Tổng quan & nguồn','Tiến trình','Điều phối','Phương án','Chẩn đoán'];const panes=names.map((name,i)=>{const p=el('div','');p.className='detail-pane';p.id='pane-'+i;p.setAttribute('role','tabpanel');p.setAttribute('aria-labelledby','tab-'+i);p.hidden=i!==0;return p});let current=0;for(const node of nodes.slice(1)){if(node.tagName==='H3'&&node.textContent==='Tiến trình và nguyên nhân')current=1;if(node.tagName==='H3'&&node.textContent==='Yêu cầu xử lý mới')current=2;let target=current;if(node.tagName==='SECTION'&&current!==2){const h=node.querySelector('h3')?.textContent||'';target=h.startsWith('Phương án')?3:h.startsWith('Chi tiết đọc')?4:1}if(target===0&&node.tagName==='DETAILS')node.open=true;panes[target].append(node)}const record=[...rows,...history].find(x=>x.id===id);if(record?.reason){const reason=el('p',record.reason);reason.style.cssText='padding:12px;background:#fff8e8;border-radius:8px';panes[0].prepend(reason)}
+names.forEach((name,i)=>{const b=el('button',name);b.id='tab-'+i;b.setAttribute('role','tab');b.setAttribute('aria-controls','pane-'+i);b.setAttribute('aria-selected',String(i===0));b.tabIndex=i===0?0:-1;const activate=()=>{panes.forEach((p,j)=>p.hidden=i!==j);[...tabs.children].forEach((t,j)=>{t.setAttribute('aria-selected',String(i===j));t.tabIndex=i===j?0:-1})};b.onclick=activate;b.onkeydown=e=>{if(['ArrowRight','ArrowLeft','Home','End'].includes(e.key)){e.preventDefault();let j=e.key==='Home'?0:e.key==='End'?names.length-1:(i+(e.key==='ArrowRight'?1:-1)+names.length)%names.length;tabs.children[j].click();tabs.children[j].focus()}};tabs.append(b);if(!panes[i].childNodes.length)panes[i].append(el('p','Chưa có dữ liệu cho mục này.'))});const back=el('button','← Danh sách hồ sơ');back.className='back-list';back.onclick=()=>$('queue').scrollIntoView({behavior:'smooth'});detail.prepend(back);detail.append(tabs,...panes);detail.scrollTop=0;if(matchMedia('(max-width:850px)').matches)detail.scrollIntoView({behavior:'smooth',block:'start'});
+};
+const sender=$('zalo-sender'),senderBadge=el('p','Đang đọc trạng thái Zalo…');senderBadge.id='system-badge';right.append(senderBadge);new MutationObserver(()=>{const h=sender.querySelector('h3');senderBadge.textContent=h?h.textContent:sender.textContent;const warning=/ĐÃ CŨ|chưa lấy được/.test(sender.textContent);if(warning)senderBadge.textContent+=' · Cần kiểm tra';senderBadge.style.color=warning?'#b45309':'#526078'}).observe(sender,{childList:true,subtree:true});
+if(embedded){queue.style.display='none';metrics.style.display='none';workspace.style.display='block'}
+})();
+
+const originalSampleShow=show;
+show=async function(id){const row=[...rows,...history].find(x=>x.id===id);if(row?.kind!=='sample')return originalSampleShow(id);selected=id;const b=document.getElementById('detail');b.replaceChildren();try{const d=await api('/api/dispatch/'+id);b.append(el('h2',d.title),el('p','Lên mẫu · Không tạo đơn ERP · Chỉ duyệt nội bộ'));for(const r of d.requirements||[])b.append(el('p',typeof r==='string'?r:JSON.stringify(r)));for(const j of d.jobs||[])b.append(el('p',j.state+' · '+j.reason),el('p',j.path||''));}catch(e){b.append(el('p',e.message));}};
+</script>
+
+<style>
+[hidden]{display:none!important}.control-header{background:#122b49;color:#fff;padding:22px;border-radius:12px;margin-bottom:16px}.control-header h1{margin:0;font-size:26px}.control-header p{margin:8px 0 0;color:#d8e6f5}.control-nav{display:flex;gap:8px;flex-wrap:wrap;margin:16px 0}.control-nav button{background:#fff;color:#163454;border:1px solid #b9c9db}.control-nav button[aria-selected=true]{background:#245acc;color:white;border-color:#245acc}.control-frame{width:100%;height:calc(100vh - 240px);min-height:650px;border:1px solid #d6e0eb;border-radius:12px;background:white}.control-help{color:#526477;font-size:14px}
+</style>
+<script>
+(()=>{
+ const root=document.body, filePane=document.createElement('section');filePane.id='file-management-pane';
+ for(const child of [...root.children])if(!['SCRIPT','STYLE'].includes(child.tagName))filePane.append(child);
+ root.prepend(filePane);
+ const heading=filePane.querySelector('h1');if(heading)heading.textContent='Điều phối file in';
+ const header=document.createElement('header');header.className='control-header';header.innerHTML='<h1>Quản lý đơn & file in</h1><p>Theo dõi tiếp nhận đơn, điều phối xuất file và tình trạng dịch vụ tại một nơi.</p>';
+ const nav=document.createElement('nav');nav.className='control-nav';nav.setAttribute('aria-label','Khu vực quản lý');
+ const orderPane=document.createElement('section');orderPane.id='order-management-pane';orderPane.hidden=true;
+ orderPane.innerHTML=`<h2>Tiếp nhận & lên đơn ERP</h2><p>Hub gom tin theo nhóm, chờ đủ thời gian từ tin khách cuối rồi mới xử lý. Lịch sử 7 ngày; giữ riêng dấu vết chống trùng.</p><form id="local-intake-config"><label>Chờ gom tin (phút) <input id="local-wait" type="number" min="1" max="120" required></label> <label><input id="local-zalo" type="checkbox"> Zalo</label> <label><input id="local-whatsapp" type="checkbox"> WhatsApp</label> <label><input id="local-viber" type="checkbox"> Viber</label> <button id="local-save" disabled>Lưu cấu hình</button></form><p id="local-intake-status" role="status"></p><label>Ngày <input type="date" id="local-date"></label> <select id="local-state"><option value="all">Tất cả trạng thái</option><option value="done">Đã lên / chống trùng</option><option value="waiting">Đang chờ</option><option value="review">Cần kiểm tra</option><option value="history">Không tạo đơn / đã đóng</option></select> <input id="local-search" placeholder="Tìm nhóm khách"><button id="local-refresh" type="button">Làm mới</button><p id="local-count"></p><div style="overflow:auto"><table style="width:100%;border-collapse:collapse"><thead><tr><th>Ngày giờ</th><th>Nhóm / nguồn</th><th>Trạng thái</th><th>Kết quả / đơn ERP</th></tr></thead><tbody id="local-intake-rows"></tbody></table></div>`;
+ let intakeRows=[],revision=0,dirty=false;
+ const by=id=>orderPane.querySelector('#'+id);
+ function drawIntake(){const body=by('local-intake-rows');body.replaceChildren();let n=0;for(const x of intakeRows){const day=new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Ho_Chi_Minh',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(x.created*1000));const state=x.display_group||(['created','duplicate'].includes(x.state)?'done':['review','uncertain'].includes(x.state)?'review':['ignored','superseded'].includes(x.state)?'history':'waiting');if(by('local-date').value&&day!==by('local-date').value)continue;if(by('local-state').value!=='all'&&state!==by('local-state').value)continue;if(!(x.group||'').toLocaleLowerCase().includes(by('local-search').value.toLocaleLowerCase()))continue;n++;const tr=document.createElement('tr');for(const value of [new Date(x.created*1000).toLocaleString('vi-VN',{timeZone:'Asia/Ho_Chi_Minh'}),(x.group||'')+' · '+x.kind,({done:'Đã lên / chống trùng',waiting:'Đang chờ',review:'Cần kiểm tra',history:'Không tạo đơn / đã đóng'})[state]||x.state,x.reason||x.classification_reason||'']){const td=document.createElement('td');td.style.cssText='padding:12px;border-bottom:1px solid #ddd;vertical-align:top';td.textContent=value;tr.append(td)}for(const o of x.orders||[]){if(!/^[a-f0-9-]{36}$/i.test(o.id||''))continue;const link=document.createElement('a');link.href='http://192.168.1.203:8000/don-hang?don='+encodeURIComponent(o.id);link.target='_blank';link.rel='noopener';link.textContent=' '+(o.code||o.id);tr.lastChild.append(link)}if(x.steps&&x.steps.length){const detail=document.createElement('details');const summary=document.createElement('summary');summary.textContent='Chi tiết '+x.steps.length+' bước';detail.append(summary);for(const step of x.steps){const line=document.createElement('div');line.style.cssText='padding:8px;border-top:1px solid #ddd';line.textContent=new Date(step.created*1000).toLocaleString('vi-VN')+' · '+step.state+' · '+(step.reason||step.classification_reason||'');detail.append(line)}tr.lastChild.append(detail)}body.append(tr)}by('local-count').textContent=n+' / '+intakeRows.length+' đợt trong 7 ngày';}
+ async function loadIntake(){try{const r=await fetch('/api/dispatch/intake');const d=await r.json();if(!r.ok)throw Error(d.detail||'Không kết nối Hub');intakeRows=d.snapshot.items;if(!dirty){revision=d.settings.revision;by('local-wait').value=d.settings.wait_minutes;for(const k of ['zalo','whatsapp','viber'])by('local-'+k).checked=d.settings.channels[k]}by('local-save').disabled=false;by('local-intake-status').textContent='Đọc trực tiếp Hub · Cấu hình v'+d.settings.revision+' · '+new Date(d.updated*1000).toLocaleString('vi-VN');drawIntake()}catch(e){by('local-intake-status').textContent='Không tải được Hub: '+e.message;by('local-save').disabled=true}}
+ by('local-intake-config').oninput=()=>dirty=true;
+ by('local-intake-config').onsubmit=async e=>{e.preventDefault();by('local-save').disabled=true;try{const session=await (await fetch('/api/session')).json();const r=await fetch('/api/dispatch/intake',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF':session.csrf},body:JSON.stringify({revision,wait_minutes:Number(by('local-wait').value),channels:Object.fromEntries(['zalo','whatsapp','viber'].map(k=>[k,by('local-'+k).checked]))})});const d=await r.json();if(!r.ok)throw Error(d.detail);dirty=false;await loadIntake()}catch(e){by('local-intake-status').textContent=e.message;by('local-save').disabled=false}};
+ for(const id of ['local-date','local-state','local-search'])by(id).oninput=drawIntake;by('local-refresh').onclick=loadIntake;
+ 
+ const systemPane=document.createElement('section');systemPane.hidden=true;const systemHeading=document.createElement('h2');systemHeading.textContent='Trạng thái hệ thống';systemPane.append(systemHeading);
+ const status=document.getElementById('status');if(status){const wrapper=status.closest('details');if(wrapper){wrapper.open=true;systemPane.append(wrapper)}}
+ const sender=document.getElementById('zalo-sender');if(sender)systemPane.append(sender);
+ const activityPane=document.createElement('section');activityPane.id='activity-pane';activityPane.hidden=true;
+ const panes=[orderPane,filePane,systemPane,activityPane],titles=['Tiếp nhận & lên đơn','Điều phối file in','Trạng thái hệ thống','Luồng Thực Thi'];
+ function select(index){panes.forEach((p,i)=>p.hidden=i!==index);[...nav.children].forEach((b,i)=>b.setAttribute('aria-selected',String(i===index)));if(index===0)loadIntake();sessionStorage.setItem('management-tab',String(index))}
+ titles.forEach((title,index)=>{const b=document.createElement('button');b.type='button';b.textContent=title;b.onclick=()=>select(index);nav.append(b)});
+ root.prepend(header,nav);root.append(orderPane,systemPane,activityPane);
+ select(location.hash.includes('brief=')?1:Number(sessionStorage.getItem('management-tab')||0));
+})();
+</script>
+
+<style>
+#execgraph{position:relative;width:1420px;height:690px;background:radial-gradient(#cdd5df 1px,transparent 1px);background-size:18px 18px;border-radius:14px}#execgraph svg{position:absolute;inset:0;pointer-events:none}.flow-node{position:absolute!important;width:174px;min-height:69px;background:#fff!important;color:#16324e!important;border:2px solid #9caec2!important;border-radius:12px!important;text-align:left;box-shadow:0 3px 8px #18304715;font-size:14px!important;padding:11px!important}.flow-node.active{border-color:#1265e8!important;box-shadow:0 0 0 3px #1265e830}.flow-node small{display:block;color:#61768b;margin-top:5px;font-size:11px}.flow-node.review{border-style:dashed!important}.flow-tabs{display:flex;gap:7px;flex-wrap:wrap;margin:18px 0}.flow-tabs button.active{background:#16324e}.flow-message{background:#fff;padding:12px;margin:10px 0;border-left:4px solid #3678b4;border-radius:8px}.flow-message.staff{border-color:#c98b2f;background:#fffaf1}.flow-message p{white-space:pre-wrap}.flow-message img{max-width:230px;max-height:230px;object-fit:contain;margin:8px;border:1px solid #ccd}.flow-detail{background:white;padding:15px;border:1px solid #ccd;border-radius:10px;margin:12px 0}#flow-focus{border-left:4px solid #1468dd;padding:15px;background:#edf5ff;margin:16px 0}#flow-focus input{width:270px}#flow-detail pre{white-space:pre-wrap;overflow-wrap:anywhere}
+</style>
+<script>
+(()=>{
+const box=document.getElementById('activity-pane'),el=(t,v='')=>{const e=document.createElement(t);e.textContent=v;return e};
+box.innerHTML='<h2>Luồng Thực Thi · Hub</h2><p>Bấm một bước để xem nguồn, kết quả và cấu hình AI tương ứng. Sơ đồ mô tả tuyến xử lý; chỉ dữ liệu bên dưới xác nhận công việc đã chạy.</p><button id="fg-refresh">Làm mới</button> <span>Chỉ cập nhật khi mở tab hoặc bấm Làm mới; không tự tải lại khi đang xem.</span> <select id="fg-scope"><option value="">Tất cả hồ sơ đang hiển thị</option></select><span id="fg-status"></span><p><button id="fg-fit">Vừa khung</button> <button id="fg-zoom">Phóng to 100%</button> · Có thể cuộn ngang để xem các nhánh</p><div style="overflow:auto;margin-top:15px"><div id="execgraph"></div></div><div id="flow-focus"></div><nav class="flow-tabs" id="fg-tabs"></nav><div id="flow-detail"></div>';
+const nodes=[['no_action','Không có yêu cầu mới','Kết thúc · không tạo việc',225,420,'ai'],
+['source','01 Chatwoot → Hub','Cụm chữ · ảnh · file',20,270,'chat'],['agent','02 AI Agent','Phân tích yêu cầu · model',225,270,'ai','analysis'],['vision','03 Đọc ảnh / nguồn','Một hoặc nhiều ảnh',430,150,'ai','vision'],['erp','Lên đơn ERP','Số lượng · chống trùng',650,25,'erp'],['match','Ghép nguồn đúng mẫu','Phiếu lệnh ↔ ảnh ↔ AI/PDF',650,160,'files'],['pet','Xuất PNG / TIFF · PET','Ảnh đã xử lý / artwork chuẩn',1090,85,'files'],['redraw','Làm rõ / vẽ lại','Đọc yêu cầu trước khi xử lý',875,85,'files','redraw'],['jpg','JPG CMYK','File trực tiếp / từng artboard',875,255,'files','vision'],['psd','Lên mẫu PSD','Nguyên khổ · không ERP',650,460,'files'],['approve','Khách duyệt in','Đối chiếu mẫu / bằng chứng',430,560,'approval'],['send','Bot máy 101','Bàn giao ≠ gửi thành công',650,580,'approval'],
+['single_face','Một mặt','single_face',1090,190,'files'],['separate_faces','Hai mặt rời','separate_faces',1090,275,'files'],['joined_faces','Liền hai thân','Mặt sau xoay 180°',1090,360,'files'],['solid_meter','Mét màu trơn','Khổ và màu có căn cứ',1090,445,'files'],['pattern_meter','Mét hoa văn','Cần xác minh chu kỳ nối',1090,530,'files'],['ready_layout','Khách dàn sẵn','Cần kiểm chứng bố cục',1090,615,'files'],['preview','Preview nội bộ','Chờ duyệt · chưa RIP',1300,85,'files'],['unknown','Chưa xác định','Giữ nguồn · cần kiểm tra',875,590,'files']];
+const edges=[['source','jpg'],['source','agent'],['agent','vision'],['agent','no_action'],['agent','erp'],['vision','erp'],['vision','match'],['match','pet'],['vision','redraw'],['pet','preview'],['redraw','pet'],['match','jpg'],['match','psd'],['psd','preview'],...['single_face','separate_faces','joined_faces','solid_meter','pattern_meter','ready_layout'].map(k=>[k,'preview']),['agent','approve'],['approve','send'],...['single_face','separate_faces','joined_faces','solid_meter','pattern_meter','ready_layout','unknown'].map(k=>['jpg',k])];
+const graph=document.getElementById('execgraph');graph.style.width='1500px';const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('width','1500');svg.setAttribute('height','690');svg.innerHTML='<defs><marker id="fg-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L6,3 z" fill="#8fa4bb"/></marker></defs>';graph.append(svg);
+for(const [a,b] of edges){const n=nodes.find(x=>x[0]===a),m=nodes.find(x=>x[0]===b),x=n[3]+174,y=n[4]+34,xx=m[3],yy=m[4]+34;const p=document.createElementNS(svg.namespaceURI,'path');p.setAttribute('d',a==='source'&&b==='jpg'?`M ${x} ${y} L 205 ${y} L 205 390 L 850 390 L 850 ${yy} L ${xx} ${yy}`:`M ${x} ${y} C ${x+55} ${y},${xx-55} ${yy},${xx} ${yy}`);p.setAttribute('fill','none');p.setAttribute('stroke','#8fa4bb');p.setAttribute('stroke-width','2');p.setAttribute('marker-end','url(#fg-arrow)');svg.append(p)}
+const directLabel=document.createElementNS(svg.namespaceURI,'text');directLabel.setAttribute('x','430');directLabel.setAttribute('y','412');directLabel.setAttribute('fill','#225b86');directLabel.setAttribute('font-size','12');directLabel.textContent='INJAE / AN NGUYÊN · Đủ file + hết giờ gom → JPG';svg.append(directLabel);
+const fit=()=>{graph.style.zoom=Math.min(1,(graph.parentElement.clientWidth||1500)/1500)};document.getElementById('fg-fit').onclick=fit;document.getElementById('fg-zoom').onclick=()=>graph.style.zoom=1;fit();
+let data,selected='source',pane='chat',scope='',loading=false,editing=false;
+for(const n of nodes){const b=el('button',n[1]);b.className='flow-node'+(['pattern_meter','ready_layout','unknown'].includes(n[0])?' review':'');b.id='fg-'+n[0];b.style.left=n[3]+'px';b.style.top=n[4]+'px';b.append(el('small',n[2]));b.onclick=()=>{selected=n[0];pane=n[5];editing=false;draw()};graph.append(b)}
+const tabs={chat:'Chatwoot Hub',ai:'Phân tích AI',approval:'Duyệt in'};
+for(const [k,v] of Object.entries(tabs)){const b=el('button',v);b.onclick=()=>{pane=k;draw()};b.dataset.pane=k;document.getElementById('fg-tabs').append(b)}
+const json=(parent,value)=>{const p=el('pre',JSON.stringify(value,null,2));parent.append(p)};
+const stateLabel=s=>({created:'Đã lên ERP',ignored:'Đã kết thúc · không tạo đơn ERP',review:'Cần kiểm tra',waiting_details:'Chờ bổ sung thông tin',superseded:'Đã tách/gom sang hồ sơ khác',duplicate:'Đã xử lý · chống trùng'}[s]||s);
+function scoped(){return data.batches.filter(b=>!scope||b.id===scope)}
+
+const nodeGuide={
+  "source": {
+    "input": "Tin chữ, ảnh, file NAS, reply/quote, ID nhóm/người gửi/tin và thời gian; gom theo nhóm.",
+    "cases": [
+      [
+        "INJAE / AN NGUYÊN có PSD, PDF hoặc AI",
+        "Hết thời gian gom tin của nhóm + file NAS tải đủ, kiểm hash → JPG trực tiếp; không đợi AI lên đơn.",
+        "Xuất từng artboard/trang nguyên khổ; lưu nguyên yêu cầu khách."
+      ],
+      [
+        "Đang có tin mới",
+        "Tính lại thời điểm kết thúc đợt theo thời gian cấu hình, kể cả tin nhân viên hợp lệ.",
+        "Chờ đồng bộ đủ nguồn rồi xử lý."
+      ],
+      [
+        "Nhóm bỏ qua / tin hệ thống",
+        "Áp dụng danh sách bỏ qua và bộ lọc hệ thống.",
+        "Không tạo yêu cầu đặt hàng từ nguồn này."
+      ],
+      [
+        "CANAVI / CANAVI HCM2",
+        "Phiếu theo người gửi chính đã cấu hình; người khác vẫn có thể bổ sung file thiết kế.",
+        "Không lấy ảnh đơn lẻ của người không được chỉ định làm phiếu."
+      ],
+      [
+        "Tin trả lời mẫu cũ",
+        "Giữ liên kết reply/quote đúng tin gốc; không ghép chỉ bằng tên gần giống.",
+        "Nguồn mất thì kiểm chứng bằng chứng thay thế hoặc báo thiếu."
+      ],
+      [
+        "Bấm CHẠY LUỒNG",
+        "Chỉ bỏ thời gian chờ cho cụm đã đồng bộ; các kiểm chứng vẫn chạy.",
+        "Không bỏ khóa chống trùng."
+      ]
+    ],
+    "result": "Một cụm nguồn có ID rõ ràng; một cụm có thể sinh nhiều việc độc lập.",
+    "guard": "Tin đã ghi ERP không được tự tái sử dụng để tạo đơn.",
+    "source": "order_intake.py · intake_quiet.py · intake_run_now.py · direct_jpg_intake.py"
+  },
+  "agent": {
+    "input": "Toàn cụm tin và ngữ cảnh tham chiếu; role khách/nhân viên, ID ảnh/file. Chưa thấy ảnh thì không được đoán nội dung ảnh.",
+    "cases": [
+      [
+        "Trao đổi nội bộ / trả lời xã giao",
+        "Bộ lọc trước AI có thể kết thúc ngay. Câu đáp nhân viên không có lượng >10 được lọc theo chính sách hiện tại.",
+        "Không đọc ảnh để tìm đơn trong trao đổi thuần túy."
+      ],
+      [
+        "Đặt hàng / đặt thêm",
+        "Xác định mẫu, tổng lượng hay lượng mới; kiểm nguồn và đơn đã có.",
+        "Đề xuất ERP, không tự suy số lượng từ tin thanh toán."
+      ],
+      [
+        "Nhiều ảnh / nhiều vị trí một sản phẩm",
+        "Phân biệt nhiều vị trí của một đơn với nhiều mẫu độc lập.",
+        "Một đơn có nhiều dòng; mỗi vị trí mang số lượng tương ứng."
+      ],
+      [
+        "Làm mẫu / vẽ lại",
+        "Tách yêu cầu thiết kế khỏi yêu cầu đặt hàng trong cùng cụm.",
+        "Chuyển nhánh làm mẫu; không tự coi làm mẫu là đặt hàng."
+      ],
+      [
+        "Duyệt in / chỉnh mẫu",
+        "Gắn lời khách với đúng ảnh/mẫu đang trao đổi.",
+        "Nhánh thông báo độc lập với ERP."
+      ],
+      [
+        "Tin xác nhận muộn",
+        "Đối chiếu ngữ cảnh chưa xử lý ở đợt trước; cần nối được đúng mẫu.",
+        "Không lấy lại số lượng của đơn đã hoàn thành."
+      ],
+      [
+        "Nhiều việc trong một cụm",
+        "Tách nguồn cho từng yêu cầu và lưu kết quả riêng.",
+        "Một việc thiếu dữ liệu không chứng minh mọi việc đều lỗi."
+      ]
+    ],
+    "result": "Đề xuất có nguồn → code kiểm chứng → công việc ERP / file / duyệt in / không xử lý.",
+    "guard": "Số lượng là căn cứ, không phải cứ có số hoặc ảnh là tạo đơn. Số lượt AI thực tế xem trong bảng token bên dưới.",
+    "source": "agent_loop.py · intake_preflight.py · staff_image_gate.py · intake_lifecycle.py"
+  },
+  "vision": {
+    "input": "Ảnh cần thiết của đúng yêu cầu, phiếu lệnh, preview thiết kế và kết quả đọc đã lưu.",
+    "cases": [
+      [
+        "Chỉ có ảnh của khách",
+        "Đọc ảnh khi chưa đủ thông tin bằng chữ và chưa có cache phù hợp.",
+        "Có căn cứ đặt hàng/lượng thì chuyển ERP; thiếu thì giữ chờ/kiểm tra."
+      ],
+      [
+        "Ảnh + chữ có số lượng",
+        "Đối chiếu mẫu/vị trí; dùng lại kết quả ảnh đã đọc khi phù hợp.",
+        "Không mặc định đọc lại mọi ảnh."
+      ],
+      [
+        "Ảnh nhân viên",
+        "Chỉ dùng làm nguồn đặt hàng khi có xác nhận khách nối đúng ảnh.",
+        "Ảnh trao đổi nội bộ không thành mẫu đặt mới."
+      ],
+      [
+        "Phiếu + AI/PDF/PSD/CDR",
+        "Phân biệt phiếu, maket, artwork, ảnh minh họa và file nhiều mẫu.",
+        "Ghép nguồn trước khi xuất."
+      ],
+      [
+        "Ảnh trích dẫn cũ mất",
+        "Trường hợp PET đặt thêm rõ lượng được hỗ trợ bằng ảnh chụp đúng tin Zalo đã xác minh.",
+        "Không đưa ảnh chụp hội thoại vào file thiết kế; không xác minh được thì dừng."
+      ]
+    ],
+    "result": "Kết quả đọc gắn nguồn; chuyển lên đơn và/hoặc ghép nguồn xuất file.",
+    "guard": "Không suy nội dung ảnh chưa đọc; không sử dụng ảnh chụp tin cũ làm lượng đặt mới nếu thiếu xác nhận.",
+    "source": "staff_image_gate.py · quote_conversation_evidence.py · artwork_pdf.py"
+  },
+  "erp": {
+    "input": "Đề xuất mẫu, các vị trí in, số lượng mới, khách ERP, nguồn và bằng chứng đã kiểm chứng.",
+    "cases": [
+      [
+        "Một mẫu, một vị trí",
+        "Tạo dòng sản phẩm theo yêu cầu.",
+        "Đơn ở Lên mẫu nếu đủ điều kiện."
+      ],
+      [
+        "Một mẫu, nhiều vị trí",
+        "Mỗi vị trí là một dòng riêng trong cùng đơn; không cộng lượng thành số sản phẩm thực.",
+        "Ví dụ 3000 sản phẩm × 2 vị trí → 2 dòng 3000."
+      ],
+      [
+        "Nhiều đơn trong cụm",
+        "Tách công việc/nguồn từng đơn.",
+        "Việc đã xong không chạy lại khi việc khác lỗi."
+      ],
+      [
+        "Đặt thêm / chốt tổng",
+        "Phân biệt lượng mới với tổng lượng đã đặt và đối chiếu đơn cũ.",
+        "Không cộng lại lượng đã ghi."
+      ],
+      [
+        "Chưa có mã hàng",
+        "Không bịa mã hoặc ghi chuỗi Chờ mã vào trường mã.",
+        "Mã null; giao diện biểu diễn chờ bổ sung mã."
+      ],
+      [
+        "Đã ghi / chưa rõ kết quả ghi",
+        "Đối soát bằng request ID và nguồn trước khi tiếp tục.",
+        "Không tự gửi lại."
+      ]
+    ],
+    "result": "Mã đơn và link ERP hiện trong tab Tiếp nhận & lên đơn.",
+    "guard": "Luồng xuất file chạy độc lập, không bắt buộc đợi tạo ERP xong.",
+    "source": "order_intake.py · agent_order_tasks.py · intake_lifecycle.py"
+  },
+  "match": {
+    "input": "Phiếu/maket, ID mẫu, file nguồn, trang/artboard, phiên bản và thông tin trong cụm.",
+    "cases": [
+      [
+        "CANAVI / CANAVI HCM2",
+        "Chờ đủ phiếu và thiết kế đúng mẫu; ghép sau đợt gom tin.",
+        "Thiếu file thì chờ nguồn, không coi là lỗi xuất."
+      ],
+      [
+        "Một file chứa nhiều mẫu",
+        "Đọc danh mục trang/mã mẫu, ánh xạ một file cho nhiều phiếu phù hợp.",
+        "Không đếm số file để suy số phiếu thiếu."
+      ],
+      [
+        "INJAE / AN NGUYÊN",
+        "Nguồn thiết kế sẵn đi JPG; lấy kích thước khách yêu cầu, không có thì theo nguồn.",
+        "Không để điều kiện số lượng ERP chặn xuất."
+      ],
+      [
+        "Nhóm khác",
+        "Mặc định PET/TIFF từng vị trí; chuyển JPG khi có yêu cầu chuyển nhiệt có nguồn.",
+        "File/link phải tải về và đọc được."
+      ],
+      [
+        "Dùng mẫu/file cũ",
+        "Đúng khách, mã mẫu và file cũ hợp lệ thì dùng lại, chờ duyệt lại.",
+        "Không nhắc file mới hoặc tự xuất lại."
+      ],
+      [
+        "Thiếu một phần / nhiều nguồn mâu thuẫn",
+        "Xuất phần đã xác định đủ nguồn; giữ phần thiếu hoặc mơ hồ để kiểm tra.",
+        "Không gán bừa file gần tên."
+      ]
+    ],
+    "result": "Hồ sơ nguồn gắn đúng mẫu và loại xuất.",
+    "guard": "Nhắc thiếu file chỉ theo cấu hình và điều kiện của luồng nhắc; không phải mọi nhóm đều được nhắc tự động.",
+    "source": "source_readiness.py · export_routing.py · missing_file_reminders.py"
+  },
+  "pet": {
+    "input": "Artwork chuẩn hoặc ảnh đã qua đọc yêu cầu → làm rõ/vẽ lại/tách nền → kiểm chứng; kích thước và từng vị trí in có căn cứ.",
+    "cases": [
+      [
+        "Group vector đủ nguồn",
+        "Giữ nguyên kích thước artwork, chữ, chi tiết trắng, nền thuộc logo và khoảng cách.",
+        "PNG/TIFF từng vị trí; AI editable khi đi qua Illustrator."
+      ],
+      [
+        "Ảnh logo mờ",
+        "Đi nhánh làm rõ/vẽ lại khi có yêu cầu và adapter phù hợp.",
+        "Preview kiểm tra trước khi in."
+      ],
+      [
+        "Nhiều vị trí",
+        "Mỗi vị trí là phần xuất riêng.",
+        "Không xuất lặp phần đã xong."
+      ],
+      [
+        "Thiếu một artwork",
+        "Phần đủ nguồn được xuất trước, phần thiếu ghi nội bộ.",
+        "Không chặn toàn mẫu vì phần khác thiếu."
+      ]
+    ],
+    "result": "PNG/TIFF trong thư mục khách/DESIGNER và preview nội bộ.",
+    "guard": "Không áp dụng cữ túi/co vải JPG cho PET; giữ trong suốt và chi tiết mực trắng. File raster không được coi là đã có kênh spot white nếu chưa kiểm chứng.",
+    "source": "pet_exports.py · native_auto.py · native_local.py · pet_worker.py"
+  },
+  "redraw": {
+    "input": "Ảnh/logo đã xác định đúng nguồn, toàn bộ tin khách yêu cầu làm mẫu/vẽ mẫu/lên mẫu và ghi chú nằm trên ảnh. Đọc yêu cầu trước khi xử lý pixel.",
+    "cases": [
+      [
+        "Có ghi chú trên ảnh hoặc tin yêu cầu sửa",
+        "Đọc lời khách và ghi chú, lập phương án riêng từng vị trí: phần cần sửa, chữ cuối cùng, phần giữ nguyên; kiểm nguồn và kiểm chứng phương án trước khi vẽ.",
+        "Chỉnh theo phương án đã kiểm chứng; thiếu căn cứ hoặc ghi chú không đọc rõ thì cần kiểm tra."
+      ],
+      [
+        "Khách yêu cầu làm mẫu, không có chỉnh sửa cụ thể",
+        "Đánh giá chất lượng logo: đủ nét thì giữ; thiếu pixel thì tăng nét; cần phục dựng thì theo điều kiện xác nhận hiện có.",
+        "Tách nền, giữ chi tiết trắng và kiểm tra trước khi chuyển xuất."
+      ],
+      [
+        "Ảnh đã sạch / nền trong suốt",
+        "Không gọi vẽ lại chỉ vì có chữ lên mẫu.",
+        "Dùng ảnh đạt yêu cầu để xuất."
+      ],
+      [
+        "Chữ mờ, sai nguồn hoặc thiếu chi tiết không thể xác định",
+        "Giữ trạng thái cần kiểm tra, không tự sáng tạo chữ/hình.",
+        "Không xuất bản sai như kết quả hoàn thành."
+      ],
+      [
+        "Tách nền và chi tiết trắng",
+        "Phân biệt nền ngoài với phần trắng thuộc logo, kiểm trên nền sáng và tối.",
+        "PNG trong suốt → bước xuất TIFF; không xóa trắng toàn ảnh."
+      ]
+    ],
+    "result": "Ảnh đã làm rõ/tách nền và kết quả kiểm chứng → Xuất PNG/TIFF PET → preview nội bộ. Không đi thẳng từ vẽ lại sang hoàn tất.",
+    "guard": "Giữ nguyên chi tiết không được yêu cầu sửa, gồm phần trắng của logo. Kiểm kết quả theo phương án mới; receipt gắn nguồn và phương án để chống gọi/xuất trùng. Lượt chưa rõ kết quả phải đối soát, không tự gửi lại. TIFF dùng worker và quy tắc mực trắng hiện có; cần duyệt preview nội bộ.",
+    "source": "raster_router.py · openai_redraw.py · replicate_redraw.py · raster_pet.py"
+  },
+  "jpg": {
+    "input": "Danh mục tất cả artboard và từng phần cần in; phiếu, maket, kích thước, cữ, nền, hướng hoa văn.",
+    "cases": [
+      [
+        "INJAE / AN NGUYÊN có PSD, PDF hoặc AI",
+        "Hết thời gian gom tin của nhóm + file NAS tải đủ, kiểm hash → JPG trực tiếp; không đợi AI lên đơn.",
+        "Xuất từng artboard/trang nguyên khổ; lưu nguyên yêu cầu khách."
+      ],
+      [
+        "Yêu cầu riêng / tạm dừng",
+        "Đổi khổ, sửa nội dung, chỉ xuất một phần hoặc tạm dừng phải được xử lý/xác nhận trước.",
+        "Ghi rõ yêu cầu trong điều phối; không tự bỏ yêu cầu để xuất nguyên khổ."
+      ],
+      [
+        "Nguồn trùng / nhiều artboard",
+        "Đối chiếu SHA256 trong đúng nhóm; nguồn đã có hồ sơ không tự xuất lại. Kiểm đủ số artboard đầu ra.",
+        "Một JPG CMYK mỗi artboard/trang, preview nội bộ; không RIP/gửi khách."
+      ],
+      [
+        "Phân loại trước chọn group",
+        "Lập bảng mẫu → phần → loại dàn → trang nguồn → điều kiện còn thiếu.",
+        "Một artboard không mặc nhiên là một đơn."
+      ],
+      [
+        "Nền trắng vải",
+        "Không lấy khung trắng mô phỏng làm nền in.",
+        "Vẫn giữ nền trắng nằm trong logo."
+      ],
+      [
+        "Nền sọc liền tấm",
+        "Lấy/dựng nền phủ cả tấm theo kích thước và màu; logo là lớp riêng.",
+        "Không ghép lại nền từng mặt nếu đã có nền liền."
+      ],
+      [
+        "Canh cữ",
+        "Theo mốc maket, có thể là object con trong group; giữ phần tràn.",
+        "Không đổi kích thước logo để ép vào cữ."
+      ],
+      [
+        "Miệng / gấp / may",
+        "Miệng trống mặc định +5 cm; có số rõ thì theo phiếu. Phân biệt gấp với đường may.",
+        "Không tự cộng 0,5 cm cho mọi mẫu."
+      ],
+      [
+        "Phần không hỗ trợ / thiếu căn cứ",
+        "Giữ phần đó để kiểm tra; phần đủ điều kiện vẫn tiếp tục.",
+        "Phân loại được chưa có nghĩa đã xuất được."
+      ]
+    ],
+    "result": "JPG CMYK và AI editable vào DESIGNER; sáu loại dàn nằm ở các node bên phải.",
+    "guard": "Giữ nguồn gốc; giữ kích thước logo và lớp nền trắng; chỉ thay đổi nền/dàn theo phương án đã kiểm chứng.",
+    "source": "jpg_catalog.py · jpg_multi.py · jpg_plan.py · jpg_native.py · jpg_worker.py · direct_jpg_intake.py · group_original_jpg.py · original_jpg.py · psd_artboards.py"
+  },
+  "single_face": {
+    "input": "Một mặt in trên một miếng/tấm.",
+    "cases": [
+      [
+        "Một mặt của tấm hai thân",
+        "Chỉ chia chiều dài khi kết cấu phiếu/maket xác nhận.",
+        "Không luôn chia đôi chỉ vì có chữ 1 mặt."
+      ],
+      [
+        "Logo / cữ / phần tràn",
+        "Giữ kích thước group; canh theo mốc maket, không theo toàn bộ biên tràn.",
+        "Một file JPG cho phần in xác định."
+      ]
+    ],
+    "result": "JPG CMYK + AI editable nếu renderer xác nhận hỗ trợ và đủ nguồn.",
+    "guard": "Không tự xuất lại phần hoàn thành; xem phương án và kết quả thực tế bên dưới.",
+    "source": "jpg_catalog.py · jpg_multi.py · jpg_plan.py · jpg_worker.py"
+  },
+  "separate_faces": {
+    "input": "Hai mặt là hai miếng rời.",
+    "cases": [
+      [
+        "Mặt trước và mặt sau",
+        "Chọn đúng group từng mặt, xác định khổ và cữ riêng.",
+        "Hai file riêng theo phương án."
+      ],
+      [
+        "Hai hình giống nhau",
+        "Đối chiếu nguồn và phần tràn theo maket.",
+        "Không tự nhân đôi một mặt khi chưa xác minh."
+      ]
+    ],
+    "result": "JPG CMYK + AI editable nếu renderer xác nhận hỗ trợ và đủ nguồn.",
+    "guard": "Không tự xuất lại phần hoàn thành; xem phương án và kết quả thực tế bên dưới.",
+    "source": "jpg_catalog.py · jpg_multi.py · jpg_plan.py · jpg_worker.py"
+  },
+  "joined_faces": {
+    "input": "Tấm liền hai thân, có căn cứ kích thước vải và kết cấu.",
+    "cases": [
+      [
+        "Hai mặt có logo",
+        "Mặt sau xoay 180°, giữ nguyên kích thước; canh giữa/cữ theo mốc.",
+        "Một tấm liền."
+      ],
+      [
+        "Chỉ một mặt có logo",
+        "Nền có thể phủ cả tấm, chỉ đặt logo ở mặt cần in.",
+        "Không nhân đôi logo sang mặt trắng."
+      ],
+      [
+        "Sọc/hoa văn nền",
+        "Ưu tiên nền liền nguyên tấm nếu phù hợp; hướng mặt sau theo phương án.",
+        "Đường nối cần kiểm tra, không mặc định mọi hoa văn đều liền."
+      ]
+    ],
+    "result": "JPG CMYK + AI editable nếu renderer xác nhận hỗ trợ và đủ nguồn.",
+    "guard": "Không tự xuất lại phần hoàn thành; xem phương án và kết quả thực tế bên dưới.",
+    "source": "jpg_catalog.py · jpg_multi.py · jpg_plan.py · jpg_worker.py"
+  },
+  "solid_meter": {
+    "input": "In mét màu trơn có khổ và mã màu.",
+    "cases": [
+      [
+        "Có CMYK/khổ rõ",
+        "Dàn mảng màu theo mã và kích thước đã xác định.",
+        "JPG CMYK; số mét đặt không phải chiều cao file."
+      ],
+      [
+        "Thiếu màu/khổ",
+        "Giữ thiếu trường tương ứng.",
+        "Không chọn màu bằng phỏng đoán."
+      ]
+    ],
+    "result": "JPG CMYK + AI editable nếu renderer xác nhận hỗ trợ và đủ nguồn.",
+    "guard": "Không tự xuất lại phần hoàn thành; xem phương án và kết quả thực tế bên dưới.",
+    "source": "jpg_catalog.py · jpg_multi.py · jpg_plan.py · jpg_worker.py"
+  },
+  "pattern_meter": {
+    "input": "In mét hoa văn cho quai/hông/đáy hoặc vải.",
+    "cases": [
+      [
+        "Có chu kỳ lặp",
+        "Xác định hướng ngang/dọc và đơn vị lặp trên/dưới.",
+        "Chiều cao theo hoa văn, không cố định 20 cm."
+      ],
+      [
+        "Chưa liền chu kỳ / chưa rõ hướng",
+        "Ghi thiếu căn cứ và chờ điều chỉnh.",
+        "Không tự xác nhận seamless."
+      ]
+    ],
+    "result": "JPG CMYK + AI editable nếu renderer xác nhận hỗ trợ và đủ nguồn.",
+    "guard": "Không tự xuất lại phần hoàn thành; xem phương án và kết quả thực tế bên dưới.",
+    "source": "jpg_catalog.py · jpg_multi.py · jpg_plan.py · jpg_worker.py"
+  },
+  "ready_layout": {
+    "input": "Khách đã dàn sẵn phần in.",
+    "cases": [
+      [
+        "Bố cục đầy đủ",
+        "Kiểm kích thước/hướng, giữ tỷ lệ và artwork; loại ghi chú ngoài phần in.",
+        "Xuất theo khổ có căn cứ."
+      ],
+      [
+        "Bố cục chỉ là mô phỏng",
+        "Không coi hình túi/maket là tấm in sẵn.",
+        "Chuyển đúng loại dàn hoặc cần kiểm tra."
+      ]
+    ],
+    "result": "JPG CMYK + AI editable nếu renderer xác nhận hỗ trợ và đủ nguồn.",
+    "guard": "Không tự xuất lại phần hoàn thành; xem phương án và kết quả thực tế bên dưới.",
+    "source": "jpg_catalog.py · jpg_multi.py · jpg_plan.py · jpg_worker.py"
+  },
+  "psd": {
+    "input": "PSD và yêu cầu in test/lên mẫu.",
+    "cases": [
+      [
+        "Chỉ làm mẫu",
+        "Mở PSD, dùng khổ/độ phân giải gốc nếu không có chỉ định khác.",
+        "JPG CMYK trong thư mục khách/DESIGNER; không tự tạo ERP."
+      ],
+      [
+        "PSD chưa tải xong / nhiều nguồn phù hợp",
+        "Chờ nguồn hoặc đối chiếu đúng tên/mẫu.",
+        "Không bổ sung nguồn bằng đoán."
+      ]
+    ],
+    "result": "Preview nội bộ và hồ sơ loại Lên mẫu.",
+    "guard": "Đây là nhánh PSD lên mẫu JPG; PSD làm PET thuộc nhánh PET theo định tuyến.",
+    "source": "psd_samples.py · psd_worker.py"
+  },
+  "approve": {
+    "input": "Lời khách chốt in và ảnh mẫu/phiên bản đang trao đổi.",
+    "cases": [
+      [
+        "Khách duyệt rõ",
+        "Nối đúng mẫu và ảnh đã trao đổi; tổng hợp bằng chứng.",
+        "Thông báo duyệt in."
+      ],
+      [
+        "Đối chiếu ERP",
+        "Chỉ nối khi đúng khách/mẫu và đơn ở trạng thái phù hợp (Mẫu có sẵn).",
+        "Giữ ảnh/ghi chú cũ; không gán nhầm đơn."
+      ],
+      [
+        "Yêu cầu chỉnh mẫu",
+        "Tổng hợp phần cần chỉnh kèm đúng ảnh.",
+        "Việc thông báo riêng, không chặn đơn mới khác."
+      ],
+      [
+        "Không rõ khách duyệt mẫu nào",
+        "Ghi kiểm tra nội bộ.",
+        "Không gửi tổng hợp mang tên mẫu đoán."
+      ]
+    ],
+    "result": "Bản tổng hợp và trạng thái giao cho bot 101; bằng chứng ERP khi xác định được.",
+    "guard": "Duyệt mẫu không đồng nghĩa tự tạo đơn mới hoặc tự RIP.",
+    "source": "print_approval.py · print_approvals.py"
+  },
+  "send": {
+    "input": "Bản tổng hợp, ảnh mẫu, kênh, ID nhóm đích và request_id.",
+    "cases": [
+      [
+        "Đã bàn giao / queued",
+        "Bot nhận việc; chưa xác nhận gửi thành công.",
+        "Theo dõi kết quả gửi."
+      ],
+      [
+        "Đã gửi thành công",
+        "Lưu kết quả theo request_id.",
+        "Không gửi lại."
+      ],
+      [
+        "Timeout / uncertain",
+        "Giữ khóa và đối soát kết quả.",
+        "Không tự retry tin chưa rõ đã gửi hay chưa."
+      ],
+      [
+        "Sai nhóm / mất kết nối",
+        "Hiện lỗi để kiểm tra phiên và ID nhóm.",
+        "Không gửi sang nhóm gần tên."
+      ]
+    ],
+    "result": "Trạng thái Zalo/WhatsApp theo kênh thực sự được cấu hình; không suy một kênh thành công thì kênh kia thành công.",
+    "guard": "Máy 101 đảm nhiệm gửi; tab này không gọi gửi khi mở chi tiết.",
+    "source": "print_deliveries · API bot 101"
+  },
+  "preview": {
+    "input": "File xuất thành công và preview gắn đúng hồ sơ/mẫu.",
+    "cases": [
+      [
+        "Xuất xong",
+        "Lưu tại thư mục khách/DESIGNER, hiển thị preview nội bộ.",
+        "Người dùng đối chiếu."
+      ],
+      [
+        "Chưa copy",
+        "Dùng đúng bản DESIGNER để xem, không phải bấm duyệt mới thấy.",
+        "Chờ duyệt/copy."
+      ],
+      [
+        "Đã copy",
+        "Giữ dấu đã copy và khóa chống trùng.",
+        "Không copy lại cùng kết quả."
+      ]
+    ],
+    "result": "Ảnh gốc/ảnh xuất để người dùng quyết định; chưa RIP/gửi khách.",
+    "guard": "Preview là bản xem; không thay đổi file nguồn và không đồng nghĩa khách đã duyệt.",
+    "source": "dispatch_control.py · comparison_worker.py · approval_worker.py"
+  },
+  "unknown": {
+    "input": "Loại chưa hỗ trợ hoặc nguồn/diễn giải mâu thuẫn.",
+    "cases": [
+      [
+        "Thiếu dữ liệu",
+        "Ghi trường thiếu, ID nguồn và bước đang kẹt.",
+        "Chờ bổ sung; không bịa phương án."
+      ],
+      [
+        "Phần khác đủ nguồn",
+        "Cho công việc độc lập tiếp tục theo điều kiện của nhánh.",
+        "Không chạy lại phần đã hoàn thành."
+      ],
+      [
+        "Cần thêm loại dàn",
+        "Giữ hồ sơ để phân tích và bổ sung renderer/quy tắc sau.",
+        "Không chỉ đổi nhãn rồi coi là đã hỗ trợ."
+      ]
+    ],
+    "result": "Cần kiểm tra có lý do cụ thể.",
+    "guard": "Không biến lỗi kỹ thuật thành kết quả đã xuất hoặc đã lên đơn.",
+    "source": "jpg_catalog.py · workflow_errors.py"
+  },
+  "no_action": {
+    "input": "Kết luận không có yêu cầu đặt hàng, làm mẫu, xuất file hoặc duyệt in cần thực hiện.",
+    "cases": [
+      [
+        "Trao đổi thông thường",
+        "Kết thúc cụm, giữ lịch sử.",
+        "Không gọi tiếp đọc ảnh để tìm đơn."
+      ],
+      [
+        "ignored / superseded",
+        "Đọc lý do và hồ sơ liên quan: có thể đã chuyển nhánh hoặc tách mẫu.",
+        "Không coi mọi ignored là hội thoại thường."
+      ],
+      [
+        "created",
+        "Đối chiếu mã đơn/link ERP trong kết quả.",
+        "Đây là đã lên ERP, không phải chỉ mới nhận tin."
+      ]
+    ],
+    "result": "Dừng ở bước phù hợp; lịch sử vẫn xem được.",
+    "guard": "Có yêu cầu độc lập khác thì không được đóng cả cụm như không có việc.",
+    "source": "staff_image_gate.py · intake_preflight.py · order_intake.py"
+  }
+};
+function nodeDetails(area,n){
+ const g=nodeGuide[n[0]];if(!g)return;
+ const wrap=el('section');wrap.className='node-guide';wrap.dataset.node=n[0];
+ wrap.append(el('p','Quy tắc xử lý của bước này — không phải kết luận một hồ sơ đã chạy. Chọn cụm ở trên để xem kết quả thực tế bên dưới.'));
+ wrap.append(el('h4','Đầu vào cần có'),el('p',g.input));
+ if(n[0]==='source')wrap.append(el('p','Thời gian gom đang cấu hình: '+data.wait_minutes+' phút kể từ tin cuối hợp lệ.'));
+ wrap.append(el('h4','Các trường hợp và hướng xử lý'));
+ const table=el('table'),thead=el('thead'),hr=el('tr');for(const text of ['Trường hợp','Hub xử lý như thế nào','Kết quả / điểm dừng'])hr.append(el('th',text));thead.append(hr);table.append(thead);
+ const tbody=el('tbody');for(const row of g.cases){const tr=el('tr');for(const value of row)tr.append(el('td',value));tbody.append(tr)}table.append(tbody);const scroll=el('div');scroll.style.overflowX='auto';scroll.append(table);wrap.append(scroll);
+ const tail=el('div');tail.className='node-guide-tail';for(const [title,value] of [['Đầu ra / đi tiếp',g.result],['Điều kiện an toàn / không được làm',g.guard]]){const item=el('div');item.append(el('h4',title),el('p',value));tail.append(item)}wrap.append(tail);
+ const refs=el('details');refs.append(el('summary','Code liên quan để đối chiếu'),el('p',g.source));wrap.append(refs);
+ const actual=el('div');actual.className='node-live-context';actual.append(el('h4','Dữ liệu đang đối chiếu'));
+ if(!scope)actual.append(el('p','Chưa chọn một cụm cụ thể. Các danh sách bên dưới đang hiển thị phạm vi gần nhất, không chứng minh node này đã chạy cho tất cả cụm.'));
+ else for(const b of scoped()){actual.append(el('strong',b.group),el('p',formatCreated(b.created)+' · '+b.messages.length+' tin · '+b.messages.reduce((v,m)=>v+(m.images||0),0)+' ảnh · '+b.messages.reduce((v,m)=>v+(m.files||[]).length,0)+' tệp'),el('p','Trạng thái hồ sơ: '+stateLabel(b.state)+' · '+(b.reason||'Chưa có lý do được ghi')));actual.append(el('p','Đơn ERP được ghi nhận: '+(b.orders.map(o=>o.code||o.id).join(', ')||'Chưa có mã đơn trong kết quả')));}
+ wrap.append(actual);area.append(wrap);
+}
+function planTable(parent,catalog){
+ if(!catalog?.models?.length)return;
+ const table=el('table');table.className='node-plan-table';const hr=el('tr');for(const h of ['Mẫu / phần in','Loại dàn','Trang / nguồn','Nền / hướng','Kích thước / chu kỳ','Thiếu / cần kiểm tra'])hr.append(el('th',h));table.append(hr);
+ for(const m of catalog.models)for(const p of m.parts||[]){const tr=el('tr');for(const v of [m.code+' / '+(p.name||p.id),p.kind,(p.boards||[]).join(', ')+' · '+(p.sources||[]).join(', '),(p.background_strategy||p.background||'')+' · '+(p.orientation||''),(p.dimensions||'')+' · '+(p.repeat||''),(p.missing||[]).join('; ')||'Không ghi thiếu trong phân loại; vẫn phải kiểm chứng xuất'])tr.append(el('td',v));table.append(tr)}
+ const scroll=el('div');scroll.style.overflowX='auto';scroll.append(table);parent.append(el('h4','Phương án từng mẫu / từng phần'),scroll);
+}
+
+function focus(){const area=document.getElementById('flow-focus');area.replaceChildren();const n=nodes.find(x=>x[0]===selected);area.append(el('h3',n[1]),el('p',n[2]));nodeDetails(area,n);if(n[6]){const k=n[6],label=el('label','Model cho lượt tiếp theo: '),input=el('input');input.value=data.models[k];input.placeholder='Giữ mặc định: '+data.defaults[k];input.oninput=()=>editing=true;const save=el('button','Lưu model');save.onclick=async()=>{save.disabled=true;try{const sess=await(await fetch('/api/session')).json();const r=await fetch('/api/dispatch/execution',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF':sess.csrf},body:JSON.stringify({...data.models,[k]:input.value.trim()})});const v=await r.json();if(!r.ok)throw Error(v.detail||r.status);data.models=v;editing=false;area.append(el('p','Đã lưu. Không chạy lại việc đã xong.'))}catch(e){area.append(el('p',e.message))}finally{save.disabled=false}};label.append(input);area.append(label,save,el('p',k==='redraw'?'Áp dụng adapter vẽ lại OpenAI. Làm nét/tách nền Replicate là tác vụ riêng.':'Áp dụng model Gemini cùng API đã cấu hình; chọn artwork/đọc ảnh dùng chung cấu hình vision. Để trống giữ model từng bước hiện tại.'))}
+if(selected==='no_action')area.append(el('p','Khi phân loại chắc chắn toàn cụm không có đặt hàng/làm mẫu/duyệt in, Hub kết thúc tại đây. Có yêu cầu mới hoặc chưa rõ thì không tự bỏ nguồn. ignored có thể là chuyển sang PSD; đọc lý do, không coi mọi ignored là trao đổi thông thường.'));
+if(['pattern_meter','ready_layout','unknown'].includes(selected))area.append(el('p','Nhánh phân loại có trong code; tự xuất còn phụ thuộc kiểm chứng. Hoa văn phải có chu kỳ/hướng nối xác định; không mặc định cao 20 cm.'));
+if(selected==='agent'){
+const d=el('details');d.className='flow-detail';d.append(el('summary','Xem / sửa prompt AI đang dùng'));
+d.append(el('p','Các prompt theo vai trò: phân loại trước, Agent công cụ, kiểm chứng đề xuất. Không phải cụm nào cũng gọi đủ cả ba; bộ lọc/cache có thể bỏ qua bước, lỗi có thể phát sinh thêm lượt. Lưu áp dụng lượt mới, không chạy lại lịch sử. Giữ cấu trúc JSON/tool trong prompt; kiểm tra ID nguồn và chống trùng bằng code vẫn bắt buộc.'));
+const names={route:'1. Phân loại toàn cụm trước khi đọc ảnh',agent:'2. Agent phân tích và đề xuất công cụ',verify:'3. Kiểm chứng đề xuất trước ERP'};const inputs={};
+for(const [k,label] of Object.entries(names)){const t=el('textarea');t.value=data.prompts[k];t.rows=12;t.style.width='100%';t.oninput=()=>editing=true;inputs[k]=t;d.append(el('h4',label),t)}
+const save=el('button','Lưu các prompt');save.onclick=async()=>{save.disabled=true;try{const sess=await(await fetch('/api/session')).json();const prompts=Object.fromEntries(Object.entries(inputs).map(([k,t])=>[k,t.value]));const r=await fetch('/api/dispatch/execution',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF':sess.csrf},body:JSON.stringify({...data.models,prompts})});const v=await r.json();if(!r.ok)throw Error(v.detail||r.status);data.models=v;data.prompts=prompts;editing=false;d.append(el('p','Đã lưu prompt cho lượt mới. Không chạy lại việc cũ.'))}catch(e){d.append(el('p',e.message))}finally{save.disabled=false}};d.append(save);area.append(d);
+}
+if(selected==='jpg')area.append(el('p','Một artboard có thể gồm nhiều phần: thân, quai, hông, đáy. Nền trắng / màu trơn / sọc liền tấm / hoa văn từng mặt là chiến lược nền, không phải một đơn mới. Giữ nguyên kích thước logo, nền trắng của logo, co vải và cữ theo maket.'));
+}
+function renderUsage(d,b){const u=data.ai_usage?.batches?.[b.id];d.append(el('h4','Lượt gọi AI · token · chi phí'));if(!u){d.append(el('p','Chưa có số liệu ghi nhận.'));return;}d.append(el('p',u.calls+' lượt API ghi nhận · '+u.cache_hits+' lượt dùng lại cache'));if(!u.covered)d.append(el('p','Cụm cũ hoặc chưa vào bước đo: chưa có thống kê đầy đủ. Không coi thiếu dữ liệu là không gọi AI.'));
+d.append(el('p','Token đã ghi: vào '+u.tokens.input+' · ra '+u.tokens.output+' · suy luận '+u.tokens.thinking+' · cache nhà cung cấp '+u.tokens.cached),el('p','Chi phí ước tính phần đã biết: '+(u.estimated_usd===null?'Chưa đủ dữ liệu':'$'+u.estimated_usd.toFixed(6))+' · '+u.unknown_usage+' lượt thiếu usage · '+u.unknown_cost+' lượt chưa tính được phí'));
+const table=el('table');table.style.width='100%';const head=el('tr');for(const h of ['Thời gian / bước','Model / kết quả','Token vào / ra / suy luận','USD ước tính','Ghi chú'])head.append(el('th',h));table.append(head);
+for(const c of u.rows){const tr=el('tr');for(const text of [formatCreated(c.started)+' · '+c.stage,c.model+' · '+c.state,(c.tokens.input??'?')+' / '+(c.tokens.output??'?')+' / '+c.tokens.thinking,c.estimated_usd===null?'Chưa rõ':'$'+c.estimated_usd.toFixed(6),(c.same_input_repeat?'Đầu vào giống lượt trước: kiểm tra retry/gọi thừa. ':'')+(c.shared_file?'Hồ sơ file dùng chung; không cộng chéo. ':'')+(c.error||'')])tr.append(el('td',text));table.append(tr)}const wrap=el('div');wrap.style.overflow='auto';wrap.append(table);d.append(wrap);}
+function draw(){if(!data)return;for(const n of nodes)document.getElementById('fg-'+n[0]).classList.toggle('active',n[0]===selected);document.querySelectorAll('#fg-tabs button').forEach(b=>b.classList.toggle('active',b.dataset.pane===pane));if(!editing)focus();const root=document.getElementById('flow-detail');root.replaceChildren();const batches=scoped();
+const waiting=el('details');waiting.className='flow-detail';waiting.open=true;waiting.append(el('summary','Đang gom tin · '+(data.pending_batches||[]).length+' cụm'));
+waiting.append(el('p','CHẠY LUỒNG bỏ qua thời gian chờ cho cụm đã đồng bộ, vẫn phân tích và kiểm chứng như bình thường. Có thể tạo đơn ERP nếu đủ điều kiện. Tin mới đến trước khi Hub nhận việc sẽ cần làm mới và chọn lại cụm.'));
+for(const p of data.pending_batches||[]){const card=el('div');card.className='flow-message';card.append(el('strong',p.group),el('p',p.messages.length+' tin · Tin cuối '+formatCreated(p.last_timestamp)+' · Tự chạy sau '+formatCreated(p.deadline)));const view=el('details');view.append(el('summary','Xem tin đang gom'));for(const m of p.messages)view.append(el('p',formatCreated(m.time)+' · '+m.sender+'\n'+m.text+'\n'+m.images+' ảnh · '+m.files.join(', ')));card.append(view);const btn=el('button',p.queued?'ĐÃ XẾP HÀNG':'CHẠY LUỒNG');btn.disabled=!p.ready||p.queued;const status=el('p',p.ready?'':'Nguồn đang đồng bộ; chưa chạy để tránh thiếu tin/ảnh.');btn.onclick=async()=>{btn.disabled=true;try{const sess=await(await fetch('/api/session')).json();const r=await fetch('/api/dispatch/execution',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF':sess.csrf},body:JSON.stringify({action:'run_now',id:p.id})});const v=await r.json();if(!r.ok)throw Error(v.detail||r.status);btn.textContent='ĐÃ XẾP HÀNG';status.textContent=v.message}catch(e){status.textContent=e.message+' · Bấm Làm mới để đối chiếu trước khi thử lại.'}};card.append(btn,status);waiting.append(card)}root.append(waiting);
+
+if(pane==='chat'){root.append(el('p','20 hồ sơ gần nhất; chọn cụm ở trên. Đây là các ID nguồn gắn với hồ sơ intake của Hub, gồm cả hồ sơ con sau tách mẫu. Nội dung lấy từ bản lưu hiện có; không tự gọi AI.'));
+for(const b of batches){const d=el('details');d.className='flow-detail';if(scope)d.open=true;d.append(el('summary',b.group+' · '+formatCreated(b.created)+' · '+b.messages.length+' tin · '+stateLabel(b.state)));for(const m of b.messages){const card=el('div');card.className='flow-message '+(m.role==='staff'?'staff':'');card.append(el('strong',m.sender+' · '+m.role+' · '+formatCreated(m.time)),el('p',m.text));if(m.quoted_file){const q=m.quoted_file;card.append(el('p','↪ Trả lời file: '+(q.name||'Chưa lấy được tên')+' · '+(q.timestamp?formatCreated(q.timestamp):'Chưa rõ ngày')+' · '+(q.resolved?'Đã đối chiếu tin gốc':'Chưa lấy được nguồn: '+q.error)),el('small','ID file gốc: '+q.message_id));}for(const url of m.image_urls||[]){const a=el('a');a.href=url;a.target='_blank';const im=el('img');im.src=url;im.loading='lazy';im.alt='Ảnh nguồn '+m.id;a.append(im);card.append(a)}for(const f of m.files)card.append(el('p','📎 '+f.name+' · '+f.state),el('small',f.path));card.append(el('small','Tin nguồn: '+m.id));d.append(card)}root.append(d)}}
+if(pane==='ai'){if(data.ai_usage){root.append(el('p',data.ai_usage.note));const link=el('a','Bảng giá tham chiếu '+data.ai_usage.price_date);link.href=data.ai_usage.price_source;link.target='_blank';root.append(link);}root.append(el('p','Kết quả đã lưu theo hồ sơ. Không suy trạng thái “đã đọc ảnh” chỉ từ việc có ảnh.'));for(const b of batches){const d=el('details');d.className='flow-detail';if(scope)d.open=true;d.append(el('summary',b.group+' · '+formatCreated(b.created)+' · '+stateLabel(b.state)));renderUsage(d,b);d.append(el('h4','Kết luận phân loại trước khi đọc ảnh'));json(d,b.classification);d.append(el('h4','Kết quả cuối'));json(d,b.analysis);d.append(el('h4','Các công cụ Agent đã thực hiện'));json(d,b.agent_trace);d.append(el('p','Nguồn: '+b.source_ids.join(', ')));root.append(d)}const logs=el('details');logs.append(el('summary','Lượt AI xuất file đã ghi model thực tế'));for(const c of data.print_api.calls)logs.append(el('p',formatCreated(c.started)+' · '+c.stage+' · '+c.model+' · '+c.state+' · '+(c.error||'')+' · '+(c.job_id||'chưa gắn hồ sơ')));root.append(logs)}
+if(pane==='erp'){for(const b of batches){const d=el('div');d.className='flow-detail';d.append(el('strong',b.group+' · '+stateLabel(b.state)),el('p',b.reason));for(const o of b.orders){const a=el('a',o.code||o.id);a.href='http://192.168.1.203:8000/don-hang?don='+encodeURIComponent(o.id);a.target='_blank';d.append(a,el('br'))}if(!b.orders.length)d.append(el('p','Chưa có mã đơn được lưu trong kết quả này.'));root.append(d)}}
+if(pane==='files'){let count=0;const ids=new Set(batches.flatMap(b=>b.source_ids));for(const f of [...data.files.pending,...data.files.history]){if(scope&&!batches.some(b=>b.account===f.account&&(f.source_ids||[]).some(x=>b.source_ids.includes(x))))continue;const steps=data.steps[f.id]||[];const kindFilter={pet:'pet_exports',jpg:'jpg_exports',psd:'psd_samples',redraw:'pet_exports'}[selected];if(kindFilter&&!steps.some(s=>s.kind===kindFilter))continue;const kinds=['single_face','separate_faces','joined_faces','solid_meter','pattern_meter','ready_layout','unknown'];if(kinds.includes(selected)&&!steps.some(s=>JSON.stringify(s.catalog||{}).includes('"'+selected+'"')))continue;count++;const d=el('details');d.className='flow-detail';d.append(el('summary',f.title+' · '+f.state),el('p',f.reason));for(const s of steps){const sub=el('details');sub.append(el('summary',formatCreated(s.created)+' → '+s.kind+' → '+s.state),el('p',s.reason||''));if(s.catalog&&Object.keys(s.catalog).length){planTable(sub,s.catalog);const raw=el('details');raw.append(el('summary','JSON phân loại gốc'));json(raw,s.catalog);sub.append(raw);}if(s.plan&&Object.keys(s.plan).length)json(sub,s.plan);if(s.blocked_parts?.length)json(sub,s.blocked_parts);d.append(sub)}const a=el('a','Mở hồ sơ / preview trong Điều phối file in');a.href='/#brief='+f.id;a.target='_blank';d.append(a);root.append(d)}if(!count)root.append(el('p','Chưa có hồ sơ khớp nguồn / loại này trong 30 hồ sơ gần nhất. Không tự gán theo tên gần giống.'))}
+if(pane==='approval'){root.append(el('p','Nhận xác nhận → đối chiếu mẫu → tổng hợp → bàn giao API 101. submitted/queued chưa chứng minh đã gửi; uncertain giữ khóa không gửi lại.'));for(const a of data.approvals){if(scope&&!batches.some(b=>b.account===a.account&&b.thread_id===a.thread_id))continue;const d=el('details');d.className='flow-detail';d.append(el('summary',a.group+' · '+formatCreated(a.created)+' · '+a.state),el('p','Tin xác nhận: '+a.confirmation_id));json(d,a.summary);json(d,a.deliveries);root.append(d)}}}
+async function load(){if(loading)return;loading=true;try{const r=await fetch('/api/dispatch/execution');if(!r.ok)throw Error('HTTP '+r.status);data=await r.json();const select=document.getElementById('fg-scope');select.replaceChildren(el('option','Tất cả hồ sơ đang hiển thị'));select.firstChild.value='';for(const b of data.batches){const o=el('option',b.group+' · '+formatCreated(b.created)+' · '+b.messages.length+' tin');o.value=b.id;select.append(o)}select.value=scope;draw();document.getElementById('fg-status').textContent=' · Hub cập nhật '+formatCreated(data.updated)+' · n8n ngắt';}catch(e){document.getElementById('fg-status').textContent='Không đọc được Hub: '+e.message}finally{loading=false}}
+document.getElementById('fg-scope').onchange=e=>{scope=e.target.value;draw()};document.getElementById('fg-refresh').onclick=load;new MutationObserver(()=>{if(!box.hidden){fit();load()}}).observe(box,{attributes:true,attributeFilter:['hidden']});if(!box.hidden)load();
+})();
+</script>
+<style>.node-guide{background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:18px;margin:15px 0}.node-guide table,.node-plan-table{width:100%;border-collapse:collapse;min-width:680px;text-align:left}.node-guide th,.node-guide td,.node-plan-table th,.node-plan-table td{padding:12px;border:1px solid #dce3eb;vertical-align:top;line-height:1.6;overflow-wrap:anywhere}.node-guide th,.node-plan-table th{background:#eaf1fa}.node-guide td:first-child{width:23%;font-weight:600}.node-guide-tail{display:grid;grid-template-columns:1fr 1fr;gap:20px}.node-live-context{padding:12px;background:#f1f5f9;border-left:4px solid #245acc;margin-top:15px}@media(max-width:850px){.node-guide-tail{display:block}}</style>

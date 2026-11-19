@@ -27,14 +27,10 @@ class WorkflowControl:
 
     def current(self, brief_id):
         with self.store.db() as db:
-            archived = db.execute("SELECT 1 FROM design_briefs WHERE id=? AND json_extract(payload,'$.dispatch_archived_at') IS NOT NULL", (brief_id,)).fetchone()
-            if archived:
-                return False
-            row = db.execute('SELECT family FROM workflow_lineage WHERE brief_id=?',(brief_id,)).fetchone()
-            if not row:
-                return True
-            latest = db.execute('SELECT brief_id FROM workflow_lineage WHERE family=? ORDER BY created DESC,brief_id DESC LIMIT 1',(row['family'],)).fetchone()
-            return latest['brief_id'] == brief_id
+            from hub.slip_reference import reference_only
+            source=db.execute('SELECT payload FROM design_briefs WHERE id=?',(brief_id,)).fetchone()
+            if source and reference_only(db,json.loads(source[0])):return False
+            return True
 
     def merge(self, payload):
         """Merge only explicit same-sender source linkage, never just nearby messages."""

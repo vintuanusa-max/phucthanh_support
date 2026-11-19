@@ -16,7 +16,11 @@ def synchronize(reader):
     reader.last_order_sync = time.monotonic()
     # No credentials or unrelated legacy settings leave the Windows host.
     reader.cfg.pop("order_policy", None)
-    policy = sanitize(json.loads(Path(path).read_text(encoding="utf-8-sig")))
+    raw_config = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+    policy = sanitize(raw_config)
+    if reader.cfg['account']=='zalo-personal-1' and 'erp_customer_mappings' in raw_config:
+        policy['erp_customer_mappings']=raw_config['erp_customer_mappings']
+
     prefix = f"/adapters/{reader.cfg['account']}"
     response = reader.http.post(prefix + "/order-policy", json=policy)
     response.raise_for_status()
@@ -30,7 +34,9 @@ def synchronize(reader):
     if not job:
         return
     try:
-        result = save_document(job["messages"], job["reference"], reader.cfg["archive"]["root"])
+        from .order_screenshot import prepare
+        messages, prepared = prepare(job['messages'],job['id'],reader.cfg['archive']['root'],Path(__file__).resolve().parents[2]/'state')
+        result = save_document(messages, job["reference"], reader.cfg["archive"]["root"], prepared=prepared)
         image = erp_evidence_png(result)
         payload = {**result, "image_base64": base64.b64encode(image).decode()}
     except Exception as exc:

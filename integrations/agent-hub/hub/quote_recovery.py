@@ -33,3 +33,27 @@ def recover_quotes(store, messages):
             current['attachments'] = [a for a in current.get('attachments',[]) if a != 'zalo-desktop:quoted-image-unresolved']
             db.execute('UPDATE captures SET payload=? WHERE id=?', (json.dumps(current,ensure_ascii=False), target[0]))
             message.update(current)
+
+
+def batch_image_fallback(store, message, messages):
+    """Owner rule: fresh customer images in this batch can replace unavailable quote evidence.
+
+    Keep the original quote unresolved; do not claim these are the quoted original.
+    """
+    sources = [m for m in messages
+               if m.get('account') == message.get('account')
+               and m.get('thread_id') == message.get('thread_id')
+               and m.get('origin') == 'customer' and m.get('direction') == 'incoming'
+               and not m.get('revision') and not m.get('recalled')
+               and not m.get('quoted_image') and m.get('images')]
+    valid = []
+    for source in sources:
+        try:
+            if store.images(source['images']):
+                valid.append(source['message_id'])
+        except ValueError:
+            continue
+    if valid:
+        message['quote_evidence_fallback'] = {'kind': 'customer_images_in_same_batch', 'source_message_ids': valid}
+        message['attachments'] = [a for a in message.get('attachments', []) if a != 'zalo-desktop:quoted-image-unresolved']
+    return bool(valid)

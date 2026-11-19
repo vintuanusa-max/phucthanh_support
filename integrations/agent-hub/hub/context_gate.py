@@ -1,3 +1,4 @@
+from hub.ai_usage import post as usage_post
 """Bounded conversation context and a fail-closed gate for new ERP orders."""
 import hashlib
 import json
@@ -9,7 +10,7 @@ from pydantic import Field
 from hub.models import StrictModel
 from hub.order_policy import capture_allowed, key
 
-VERSION = 'context-v3-position-lines'
+VERSION = 'context-v5-short-history'
 
 # These fields belong to artwork preparation, not acceptance of a new order.
 # Unknown missing fields, quantity/intent ambiguities and conflicts still block.
@@ -61,11 +62,11 @@ def classify(settings, context, images):
         'Thiếu file gốc, kích thước in, màu, xác nhận thiết kế, product_details hay design_confirmation chỉ giữ luồng file; không chặn đơn. '
         'missing_fields chỉ chặn khi chưa rõ ý định đặt, số lượng hoặc phân bổ số lượng giữa các mẫu. Thiếu mã sản phẩm ERP, giá hoặc ngày giao không phải lý do chặn đơn mới. Nêu conflicts khi có mâu thuẫn thực sự; trả đúng JSON theo schema.'
     )
-    system += ' MỖI VỊ TRÍ IN LÀ MỘT DÒNG ERP RIÊNG. Khi đủ căn cứ cùng sản phẩm có N vị trí in: tạo N items, mỗi item có số lượng sản phẩm được in ở vị trí đó, ten_mau/ghi_chu nêu đúng logo và vị trí. Các dòng của cùng sản phẩm dùng cùng print_position_group (khóa ngắn ổn định trong yêu cầu như san_pham_1); mẫu độc lập để null. Ví dụ 600 nón in anfa và Hữu Nghị ở hai vị trí: 2 dòng 600, cùng print_position_group; tổng 1200 lượt in nhưng chỉ 600 nón. Không chia thành 300, không gộp hai vị trí dù cùng mã hàng. Thiếu mã từng vị trí để null/Chờ mã, không suy mã từ logo. Chỉ dùng nhóm khi nguồn/xác nhận chứng minh cùng sản phẩm; ảnh mơ hồ vẫn kiểm tra nội bộ. '
+    system += ' MỖI VỊ TRÍ IN LÀ MỘT DÒNG ERP RIÊNG. Khi đủ căn cứ cùng sản phẩm có N vị trí in: tạo N items, mỗi item có số lượng sản phẩm được in ở vị trí đó, ten_mau/ghi_chu nêu đúng logo và vị trí. Các dòng của cùng sản phẩm dùng cùng print_position_group (khóa ngắn ổn định trong yêu cầu như san_pham_1); mẫu độc lập để null. Ví dụ 600 nón in anfa và Hữu Nghị ở hai vị trí: 2 dòng 600, cùng print_position_group; tổng 1200 lượt in nhưng chỉ 600 nón. Không chia thành 300, không gộp hai vị trí dù cùng mã hàng. Thiếu mã từng vị trí để JSON null (không điền chuỗi Chờ mã), không suy mã từ logo. Chỉ dùng nhóm khi nguồn/xác nhận chứng minh cùng sản phẩm; ảnh mơ hồ vẫn kiểm tra nội bộ. '
     schema = IntentDecision.model_json_schema()
     with httpx.Client(timeout=60, follow_redirects=False, trust_env=False) as client:
-        response = client.post(
-            'https://generativelanguage.googleapis.com/v1beta/models/' + settings.gemini_model + ':generateContent',
+        response = usage_post(
+            client, settings, 'context', 'https://generativelanguage.googleapis.com/v1beta/models/' + settings.gemini_model + ':generateContent',
             headers={'x-goog-api-key': settings.gemini_key},
             json={'systemInstruction': {'parts': [{'text': system}]},
                   'contents': [{'role': 'user', 'parts': [{'text': json.dumps(context, ensure_ascii=False)}]
@@ -76,6 +77,20 @@ def classify(settings, context, images):
         parts = response.json()['candidates'][0]['content']['parts']
     return IntentDecision.model_validate_json(''.join(p.get('text', '') for p in parts if not p.get('thought')))
 
+
+def classify_validated(settings, context, images):
+    decision = classify(settings, context, images)
+    try:
+        validate_decision(decision, context)
+    except ValueError as exc:
+        if str(exc) != 'Context quote does not match source':
+            raise
+        repaired = dict(context, validation_feedback={
+            'error': 'evidence phải là nguyên văn trong text của source_message_ids; không dùng chữ đọc trên ảnh làm trích dẫn tin chữ',
+            'instruction': 'Đọc lại đầy đủ nguồn; giữ phân biệt số lượng/vị trí. Trả lại JSON với bằng chứng tin chữ hợp lệ. Không sáng tác hay sửa text nguồn.'})
+        decision = classify(settings, repaired, images)
+        validate_decision(decision, context)
+    return decision
 
 def validate_decision(decision, context):
     all_messages = {m['message_id']: m for m in context['history'] + context['batch']}
@@ -121,6 +136,14 @@ class ContextGate:
         if not policy or not mapping or not capture_allowed(policy, cfg['channel'], run['thread_id'], mapping['display_name']):
             raise ValueError('Context policy unavailable or excluded group')
         end = max(m['timestamp'] for m in messages)
+        start = min(m['timestamp'] for m in messages)
+        # Only nearby unsolicited context. Old explicitly replied-to sources remain valid.
+        minutes = max(0, min(60, int(cfg.get('context_agent', {}).get('history_window_minutes', 30))))
+        batch_ids = {m['message_id'] for m in messages}
+        reply_ids = {str(q['message_id']) for m in messages
+                     for q in (m.get('quoted_image'), m.get('quoted_file'))
+                     if isinstance(q, dict) and q.get('message_id')}
+
         internal = {key(v) for v in policy.get(cfg['channel'] + '_internal_members', [])}
         internal_ids = set(cfg.get('context_agent', {}).get('internal_sender_ids', []))
         def clean(m):
@@ -132,16 +155,23 @@ class ContextGate:
                     'role_basis': 'sender_id' if by_id else ('name_fallback' if by_name else 'capture'),
                     'timestamp': m['timestamp'], 'text': m.get('text', '')[:4000],
                     'has_image': bool(m.get('images')), 'quoted_image': m.get('quoted_image'),
+                    'staff_image_gate': m.get('staff_image_gate'),
+                    'quoted_file': m.get('quoted_file'),
                     'files': [a['name'] for a in m.get('assets', [])]}
         with self.store.db() as db:
             rows = db.execute("SELECT payload FROM captures WHERE account=? AND thread_id=? "
                               "AND json_extract(payload,'$.timestamp') BETWEEN ? AND ? "
                               "ORDER BY json_extract(payload,'$.timestamp') DESC, revision DESC LIMIT 80",
-                              (run['account'], run['thread_id'], end-21600, end)).fetchall()
+                              (run['account'], run['thread_id'], start-minutes*60, end)).fetchall()
+            if reply_ids:
+                marks = ','.join('?' for _ in reply_ids)
+                rows += db.execute('SELECT payload FROM captures WHERE account=? AND thread_id=? '
+                                   'AND message_id IN (' + marks + ') ORDER BY revision DESC',
+                                   (run['account'], run['thread_id'], *sorted(reply_ids))).fetchall()
             previous = db.execute("SELECT id,state,payload,result FROM intake_runs WHERE account=? AND thread_id=? "
                                   "AND id<>? AND created>? ORDER BY created DESC LIMIT 10",
                                   (run['account'], run['thread_id'], run['id'], time.time()-7*86400)).fetchall()
-        seen = set(); history = []
+        seen = set(batch_ids); history = []
         for row in rows:
             m = json.loads(row['payload'])
             if m['message_id'] in seen: continue
@@ -157,7 +187,12 @@ class ContextGate:
                                'designs': [o.get('ten_mau') for o in p.get('orders', [])],
                                'erp_orders': result.get('orders', [])})
         return {'account': run['account'], 'thread_id': run['thread_id'],
-                'batch': [clean(m) for m in messages], 'history': list(reversed(history)), 'candidates': candidates}
+                'batch': [clean(m) for m in messages], 'history': sorted(history, key=lambda m: m['timestamp']),
+                'candidates': candidates,
+                'history_policy': {
+                    'automatic_window_minutes': minutes,
+                    'instruction': 'Batch là yêu cầu mới. Phiếu lệnh mới đủ thông tin dùng nguồn batch, không gắn lịch sử không liên quan. Lịch sử chỉ bổ trợ nhận diện mẫu; cùng ảnh/mã mẫu với đơn cũ không chứng minh trùng đơn. Đặt lại/đặt thêm lấy số lượng mới từ khách hiện tại. Candidates dùng đối soát, không tự chặn đơn mới chỉ vì có đơn cũ.'}}
+
 
     def check(self, run, messages):
         scope = self.scope(run['account'], run['thread_id'])
@@ -170,6 +205,7 @@ class ContextGate:
             if not old:
                 db.execute('INSERT INTO context_decisions VALUES(?,?,?,?,?,?,?)',
                            (digest, run['id'], VERSION, 'analyzing', json.dumps(context, ensure_ascii=False), None, time.time()))
+        decision = None
         try:
             if old:
                 if old['state'] != 'done': raise ValueError('Previous classification requires review')
@@ -185,7 +221,7 @@ class ContextGate:
                 if observed and not any(v['observation']['uncertain'] for v in observed):
                     context['image_observations']=observed
                     images=[]
-                decision = classify(self.engine.settings, context, images)
+                decision = classify_validated(self.engine.settings, context, images)
             allowed = validate_decision(decision, context)
             with self.store.db() as db:
                 db.execute("UPDATE context_decisions SET state='done',decision=? WHERE id=?",
@@ -195,9 +231,12 @@ class ContextGate:
                             'candidate_new_order' if allowed else 'human_review',digest,time.time()))
             reason = decision.intent + ': ' + decision.reason
         except Exception as exc:
-            allowed = False; reason = 'Không kiểm chứng được ngữ cảnh (' + type(exc).__name__ + ')'
+            from hub.intake_errors import detail
+            allowed = False; reason = 'Kiểm chứng ngữ cảnh: '+detail(exc)
             with self.store.db() as db:
-                db.execute("UPDATE context_decisions SET state='review' WHERE id=?", (digest,))
+                db.execute("UPDATE context_decisions SET state='review',decision=COALESCE(?,decision) WHERE id=?", (decision.model_dump_json() if decision is not None else None,digest))
+                db.execute("CREATE TABLE IF NOT EXISTS context_failures(id TEXT PRIMARY KEY,detail TEXT NOT NULL,created REAL NOT NULL)")
+                db.execute("INSERT OR REPLACE INTO context_failures VALUES(?,?,?)",(digest,reason,time.time()))
         if scope['mode'] == 'shadow': return True
         if not allowed:
             self.engine.order_intake.state(run['id'], 'review', {'reason': reason, 'context_decision_id': digest})

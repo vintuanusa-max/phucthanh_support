@@ -82,8 +82,11 @@ class SlipOrders:
   if not binding:raise ValueError('Chưa có ánh xạ khách')
   return cfg,m,binding
  def poll(self):
+  return False  # Retired: new orders belong to grouped AI intake.
+
   with self.e.store.db() as db:
-   ready=db.execute("SELECT s.*,o.payload AS order_payload FROM production_slips s JOIN production_slip_orders o ON o.id=s.id WHERE o.state='ready' ORDER BY s.rowid LIMIT 1").fetchone()
+   ready=db.execute("SELECT s.*,o.payload AS order_payload FROM production_slips s JOIN production_slip_orders o ON o.id=s.id WHERE o.state='ready' ORDER BY s.rowid").fetchall()
+   ready=next((x for x in ready if self.e.intake_management.enabled(x['account'])),None)
   if ready:
    if time.time()-self.last_capability>60:
     self.last_capability=time.time()
@@ -93,6 +96,7 @@ class SlipOrders:
   with self.e.store.db() as db:
    rows=db.execute("SELECT s.*,c.payload AS capture_payload FROM production_slips s JOIN captures c ON c.account=s.account AND c.thread_id=s.thread_id AND c.message_id=s.message_id WHERE s.state='copied' AND NOT EXISTS(SELECT 1 FROM production_slip_orders o WHERE o.id=s.id) ORDER BY s.rowid DESC LIMIT 100").fetchall()
   for raw in rows:
+   if not self.e.intake_management.enabled(raw['account']):continue
    row=dict(raw);scope=self.e.settings.inboxes.get(row['account'],{}).get('production_slips',{});m=json.loads(row['capture_payload'])
    if not scope.get('auto_order') or (m['timestamp']<scope.get('order_enabled_after',float('inf')) and row['message_id'] not in scope.get('order_recovery_ids',[])):continue
    with self.e.store.db() as db:
@@ -113,6 +117,9 @@ class SlipOrders:
    return True
   return False
  def submit(self,row):
+  return  # No alternate ERP writer; historical receipts remain read-only.
+
+  if not self.e.intake_management.enabled(row["account"]):return
   value=json.loads(row['order_payload'])
   try:
    _,_,binding=self.policy_check(row)
@@ -127,5 +134,8 @@ class SlipOrders:
   except Exception as exc:
    state='review' if isinstance(exc,httpx.HTTPStatusError) and 400<=exc.response.status_code<500 else 'uncertain';result={'reason':type(exc).__name__}
   with self.e.store.db() as db:db.execute('UPDATE production_slip_orders SET state=?,result=? WHERE id=?',(state,json.dumps(result,ensure_ascii=False),row['id']))
+  if state in ('created','duplicate'):
+   from hub.print_linking import sync_links
+   sync_links(self.e.store)
   codes=', '.join(o['ma_don_hang'] for o in result.get('orders',[]))
   self.notify(row,('ĐÃ LÊN ERP LÊN MẪU: '+codes if state=='created' else 'ĐÃ CÓ ĐƠN CÙNG NGÀY, KHÔNG TẠO THÊM: '+codes) if state in ('created','duplicate') else 'PHIẾU CHƯA XÁC NHẬN TẠO ERP: '+state+'; không tự gửi lại.')

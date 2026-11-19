@@ -34,11 +34,42 @@ def create_app(settings=None, engine=None, start_worker=True):
     engine = engine or Engine(settings, store, Chatwoot(settings), Gemini(settings), ERP(settings))
     from hub.workflow_control import WorkflowControl
     workflow = WorkflowControl(store)
+    from hub import missing_file_reminders
+    missing_file_reminders.initialize(store)
+    from hub.design_revision_notices import initialize as initialize_revision_notices
+    initialize_revision_notices(store)
     stop = threading.Event()
     from hub.order_print_bridge import OrderPrintBridge
     print_bridge = OrderPrintBridge(engine)
+    from hub.background_timing import wrap as time_background
+    print_bridge.tick=time_background('print_bridge.tick',print_bridge.tick)
+    workflow.monitor=time_background('workflow.monitor',workflow.monitor)
+
+    from hub.worker_dispatch import Dispatcher
+    dispatcher = Dispatcher(engine,stop)
+    def discover_worker_sources():
+        accounts=[a for a,c in settings.inboxes.items() if c.get('capture_enabled')]
+        while not stop.is_set():
+            dispatcher.discover(accounts)
+            stop.wait(2) # Only checks a small due-event table; no source scan when idle.
+
+    def monitor_n8n_metadata():
+        # n8n disconnected. Keep the existing bot101 delivery loop independent.
+        while not stop.is_set():
+            try:
+                from hub.bot101_forward import tick as forward_notices
+                forward_notices(engine)
+            except Exception as exc:
+                logging.getLogger(__name__).error('bot101 forwarding: %s', type(exc).__name__)
+            try:
+                from hub.design_revision_notices import tick as forward_revisions
+                forward_revisions(engine)
+            except Exception as exc:
+                logging.getLogger(__name__).error('design revision forwarding: %s', type(exc).__name__)
+            stop.wait(30)
 
     from hub.native_auto import initialize as native_init, tick as native_tick
+    native_tick=time_background('native.tick',native_tick)
     native_init(engine)
     def monitor_native():
         while not stop.is_set():
@@ -48,6 +79,7 @@ def create_app(settings=None, engine=None, start_worker=True):
 
     def monitor_customer_approvals():
         from hub.customer_approval_links import tick
+        tick=time_background('customer_approval.tick',tick)
         while not stop.is_set():
             try:tick(engine)
             except Exception:logging.getLogger(__name__).exception('Customer approval comparison failed')
@@ -84,6 +116,11 @@ def create_app(settings=None, engine=None, start_worker=True):
         if start_worker:
             from hub.native_auto import recover as native_recover
             native_recover(engine)
+        if start_worker:
+            from hub.background_timing import install
+            install(engine,stop)
+            from hub.background_events import install as install_event_gates
+            install_event_gates(engine)
         store.recover()
         engine.order_intake.recover()
         engine.artwork_checks.recover()
@@ -97,6 +134,10 @@ def create_app(settings=None, engine=None, start_worker=True):
         if start_worker: monitor.start()
         approval_thread=threading.Thread(target=monitor_customer_approvals,daemon=True)
         if start_worker:approval_thread.start()
+        n8n_thread=threading.Thread(target=monitor_n8n_metadata,daemon=True)
+        if start_worker:n8n_thread.start()
+        discovery_thread=threading.Thread(target=discover_worker_sources,daemon=True)
+        if start_worker:discovery_thread.start()
         yield
         stop.set()
         if start_worker: monitor.join(timeout=3)
@@ -114,10 +155,82 @@ def create_app(settings=None, engine=None, start_worker=True):
         if not hmac.compare_digest(authorization, "Bearer " + settings.ingest_token):
             raise HTTPException(401, "Adapter authorization required")
 
+    @app.post('/workers/artwork/wait', dependencies=[Depends(require_ingest)])
+    def wait_artwork(data: dict):
+        accounts=data.get('accounts',[])
+        if not isinstance(accounts,list) or len(accounts)>10 or any(not isinstance(a,str) or a not in settings.inboxes for a in accounts):
+            raise HTTPException(400,'Unknown worker accounts')
+        for account in accounts:workflow.beat('artwork:'+account)
+        return dispatcher.wait(accounts)
+
+    @app.get('/n8n/status', dependencies=[Depends(require_admin)])
+    def n8n_connector_status():
+        with store.db() as db:
+            tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            outbox=[dict(r) for r in db.execute('SELECT id,state,created,updated,result FROM n8n_batch_outbox ORDER BY created DESC LIMIT 100')] if 'n8n_batch_outbox' in tables else []
+            tasks=[dict(r) for r in db.execute('SELECT id,batch_id,branch,operation,state,created FROM n8n_review_tasks ORDER BY created DESC LIMIT 100')] if 'n8n_review_tasks' in tables else []
+            executions=[dict(r) for r in db.execute('SELECT id,batch_id,kind,state,result,updated FROM n8n_task_execution WHERE mode=? ORDER BY updated DESC LIMIT 100',('production',))] if 'n8n_task_execution' in tables else []
+        config_path=Path(store.path).parent/'n8n-connector.json'
+        cfg=json.loads(config_path.read_text()) if config_path.exists() else {}
+        return {'mode':cfg.get('mode','analysis_only'),'connector_enabled':cfg.get('enabled',False),
+                'business_executor_enabled':bool(cfg.get('erp_dispatch_enabled') or cfg.get('print_dispatch_enabled')),
+                'erp_dispatch_enabled':cfg.get('erp_dispatch_enabled',False),'print_dispatch_enabled':cfg.get('print_dispatch_enabled',False),
+                'enabled_after':cfg.get('enabled_after'),'outbox':outbox,'tasks':tasks,'executions':executions,'reconciliation_enabled':True}
+
+    @app.get('/dispatch/execution', dependencies=[Depends(require_admin)])
+    def execution_get():
+        from hub.execution_view import snapshot
+        return snapshot(engine)
+
+    @app.post('/dispatch/execution', dependencies=[Depends(require_admin)])
+    def execution_update(data:dict):
+        from hub.execution_models import update
+        try:
+            if data.get('action')=='run_now':
+                from hub.intake_run_now import request
+                return request(engine,data)
+            return update(store,data)
+        except ValueError as ex:raise HTTPException(409,str(ex))
+
+    @app.get('/dispatch/activity', dependencies=[Depends(require_admin)])
+    def n8n_activity():
+        from hub.n8n_observability import snapshot
+        return snapshot(store)
+
+    @app.get('/dispatch/intake', dependencies=[Depends(require_admin)])
+    def local_intake_get():
+        return {'settings':engine.intake_management.config,'snapshot':engine.intake_management.snapshot(),'updated':__import__('time').time()}
+
+    @app.post('/dispatch/intake', dependencies=[Depends(require_admin)])
+    def local_intake_update(data:dict):
+        try:
+            if data.get('action')=='approve_quantities':
+                from hub.quantity_review import approve
+                return approve(engine,data)
+            return engine.intake_management.update(data)
+        except (ValueError,KeyError,TypeError) as exc:raise HTTPException(409,str(exc))
+
     @app.get('/dispatch', dependencies=[Depends(require_admin)])
     def dispatch_list():
         from hub.dispatch_control import listing
         return listing(engine)
+
+    @app.get('/dispatch/settings', dependencies=[Depends(require_admin)])
+    def print_settings_get():
+        from hub.print_api import overview
+        return overview(engine.store)
+
+    @app.post('/dispatch/settings', dependencies=[Depends(require_admin)])
+    def print_settings_save(data: dict):
+        from hub.print_governance import update_settings
+        try:return update_settings(engine.store,data)
+        except ValueError as ex:raise HTTPException(409,str(ex))
+
+    @app.post('/dispatch/manual', dependencies=[Depends(require_admin)])
+    def manual_create(data: dict):
+        from hub.manual_export import create
+        try:return create(engine,data)
+        except (ValueError,OSError) as ex:raise HTTPException(400,str(ex) if isinstance(ex,ValueError) else 'Không đọc được nguồn NAS')
 
     @app.get('/dispatch/{bid}', dependencies=[Depends(require_admin)])
     def dispatch_detail(bid: str):
@@ -391,6 +504,24 @@ def create_app(settings=None, engine=None, start_worker=True):
         try:return engine.artwork_checks.jpg.complete(account,identity,json.loads(content))
         except (ValueError,KeyError) as exc:raise HTTPException(422,'Invalid JPG report') from exc
 
+    @app.get('/adapters/{account}/order-comparison-previews', dependencies=[Depends(require_ingest)])
+    def comparison_pending(account: str):
+        if account != 'zalo-personal-1':return {'job':None}
+        import httpx
+        with httpx.Client(timeout=15,trust_env=False,headers={'X-Zalo-Token':settings.erp_token}) as c:
+            r=c.get(settings.erp_url.rstrip('/')+'/api/v1/integrations/zalo/print-files/comparison-pending')
+            if r.status_code==404:return {'job':None}
+            r.raise_for_status();return r.json()
+
+    @app.post('/adapters/{account}/order-comparison-previews/{identity}', dependencies=[Depends(require_ingest)])
+    def comparison_result(account: str,identity: str,data: dict):
+        import httpx,re
+        if account != 'zalo-personal-1' or not re.fullmatch('[a-f0-9]{64}',identity):raise HTTPException(404)
+        if len(json.dumps(data))>24000000:raise HTTPException(413)
+        with httpx.Client(timeout=25,trust_env=False,headers={'X-Zalo-Token':settings.erp_token}) as c:
+            r=c.post(settings.erp_url.rstrip('/')+'/api/v1/integrations/zalo/print-files/comparison-results/'+identity,json=data)
+            r.raise_for_status();return r.json()
+
     @app.get('/adapters/{account}/print-approvals', dependencies=[Depends(require_ingest)])
     def pending_print_approval(account: str):
         with store.db() as d:r=d.execute("SELECT * FROM erp_print_approvals WHERE account=? AND state='queued' LIMIT 1",(account,)).fetchone()
@@ -511,6 +642,13 @@ def create_app(settings=None, engine=None, start_worker=True):
 
     @app.post("/adapters/{account}/claim", dependencies=[Depends(require_ingest)])
     def claim(account: str):
+        # Explicit owner-authorized reminder route; independent of AI/customer delivery.
+        try:
+            reminder = missing_file_reminders.claim(engine, account)
+            if reminder:
+                return {"item": reminder}
+        except Exception:
+            logging.getLogger(__name__).exception('Missing-file reminder scan failed')
         cfg = settings.inboxes.get(account)
         if (
             not cfg
@@ -576,6 +714,11 @@ def create_app(settings=None, engine=None, start_worker=True):
 
     @app.post("/adapters/{account}/prepare/{delivery}", dependencies=[Depends(require_ingest)])
     def prepare(account: str, delivery: str, request: DeliveryPrepare):
+        if delivery.startswith(missing_file_reminders.PREFIX):
+            try:
+                return missing_file_reminders.prepare(engine, account, delivery, request.client_id)
+            except ValueError as exc:
+                raise HTTPException(409, str(exc))
         with engine.lock, store.db() as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute(
@@ -603,6 +746,11 @@ def create_app(settings=None, engine=None, start_worker=True):
 
     @app.post("/adapters/{account}/results/{delivery}", dependencies=[Depends(require_ingest)])
     def result(account: str, delivery: str, request: DeliveryResult):
+        if delivery.startswith(missing_file_reminders.PREFIX):
+            try:
+                return missing_file_reminders.result(engine, account, delivery, request.model_dump())
+            except ValueError as exc:
+                raise HTTPException(409, str(exc))
         with store.db() as db:
             row = db.execute(
                 "SELECT * FROM deliveries WHERE id=? AND account=?", (delivery, account)

@@ -23,8 +23,8 @@ LIMIT = 50 * 1024 * 1024
 def decrypt(data, meta):
     if len(data) < 26 or len(data) > LIMIT + 1024:
         raise ValueError('Media size invalid')
-    kind = {'image': 'Image', 'document': 'Document'}.get(meta.get('type'))
-    if not kind or meta.get('isViewOnce'):
+    kind = {'image': 'Image', 'sticker': 'Image', 'document': 'Document'}.get(meta.get('type'))
+    if not kind or meta.get('isViewOnce') or (meta.get('type') == 'sticker' and (meta.get('isAnimated') or meta.get('isLottie'))):
         raise ValueError('Unsupported media')
     def decoded(name):
         value = base64.b64decode(meta[name], validate=True)
@@ -50,7 +50,7 @@ def decrypt(data, meta):
 
 
 def fetch(meta):
-    if meta.get('isViewOnce') or meta.get('type') not in ('image', 'document'):
+    if meta.get('isViewOnce') or meta.get('type') not in ('image', 'document', 'sticker') or (meta.get('type') == 'sticker' and (meta.get('isAnimated') or meta.get('isLottie'))):
         raise ValueError('Unsupported media')
     if not isinstance(meta.get('size'), (int, float)) or not 0 < meta['size'] <= LIMIT:
         raise ValueError('Media size limit')
@@ -81,7 +81,7 @@ def enrich(message, meta, vault):
     asset_id = hashlib.sha256((message['account']+'\0'+message['message_id']).encode()).hexdigest()
     kind = meta['type']
     mime = meta.get('mimetype') if isinstance(meta.get('mimetype'),str) else 'application/octet-stream'
-    image = normalize_image(raw) if kind == 'image' and len(raw) <= 4*1024*1024 else None
+    image = normalize_image(raw) if kind in ('image', 'sticker') and len(raw) <= 4*1024*1024 else None
     suffix = {'image/jpeg':'.jpg','image/png':'.png','image/webp':'.webp'}.get(mime, '.bin')
     name = safe_name(meta.get('filename') if isinstance(meta.get('filename'),str) else 'WhatsApp'+suffix)
     relative = '/'.join((vault.folder(message),datetime.fromtimestamp(message['timestamp']).strftime('%Y-%m'),'originals',asset_id[:12]+'__'+name))
@@ -93,7 +93,7 @@ def enrich(message, meta, vault):
         temporary.replace(destination)
     if hashlib.sha256(destination.read_bytes()).hexdigest() != digest:
         raise ValueError('NAS hash mismatch')
-    asset = dict(id=asset_id,name=name,kind='image' if kind=='image' else 'file',state='ready',relative_path=relative,sha256=digest,size=len(raw),mime_type=mime)
+    asset = dict(id=asset_id,name=name,kind='image' if kind in ('image','sticker') else 'file',state='ready',relative_path=relative,sha256=digest,size=len(raw),mime_type=mime)
     manifest = destination.with_name(destination.name+'.source.json')
     manifest.write_text(json.dumps({**{k:message[k] for k in ('account','thread_id','message_id','sender','timestamp','text')},**asset},ensure_ascii=False,indent=2),encoding='utf-8')
     message['assets']=[asset]

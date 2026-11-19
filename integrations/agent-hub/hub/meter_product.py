@@ -6,15 +6,13 @@ from decimal import Decimal
 
 def meter_quantity(text):
     text = ''.join(c for c in unicodedata.normalize('NFD', text.lower()) if not unicodedata.combining(c)).replace('đ', 'd')
-    if not re.search(r'\bvai\b', text):
-        return None
     if re.search(r'\b(gia|bao gia|bao nhieu tien|khong in|ko in|chua in|dung in|huy|kho|ngang|cao|rong|dai|kich thuoc)\b|\d\s*[x×]\s*\d', text):
         return None
     # Quantity must follow an explicit print request, not a delivery statement.
     matches = list(re.finditer(r'\bin\b[^.!?;\n\d]{0,50}(\d+(?:[.,]\d+)?)\s*(?:met|m)(?![\w²2])', text))
     if len(matches) != 1:
         return None
-    value = Decimal(matches[0].group(1).replace(',', '.'))
+    value = Decimal(matches[0].group(1).replace('.', '').replace(',', '.'))
     return value if value > 0 else None
 
 
@@ -40,6 +38,14 @@ def apply_meter_lines(orders, messages):
     def norm(value):
         return ''.join(c for c in unicodedata.normalize('NFD', value.lower()) if not unicodedata.combining(c)).replace('đ', 'd')
     matched=set()
+    # Explicit N colors/types, EACH Q meters authorizes Q for each of N lines.
+    for m in messages:
+        if m.get('origin','customer')!='customer' or m.get('direction','incoming')!='incoming' or m.get('recalled'):continue
+        text=norm(m.get('text',''))
+        count=re.search(r'\b(\d+)\s*(?:mau|loai)\b',text)
+        qty=meter_quantity(text)
+        if count and re.search(r'\bmoi\s+(?:mau|loai)\b',text) and qty is not None and int(count.group(1))==len(orders) and all(o.ma_san_pham in (None,'MET') and o.so_luong==qty for o in orders):
+            for line in orders:line.ma_san_pham='MET';matched.add(id(line))
     for m in messages:
         if m.get('origin','customer')!='customer' or m.get('direction','incoming')!='incoming' or m.get('recalled'):continue
         text=norm(m.get('text',''))

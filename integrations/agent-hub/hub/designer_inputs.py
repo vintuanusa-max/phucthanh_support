@@ -5,11 +5,13 @@ from pathlib import Path
 from xml.etree import ElementTree
 from PIL import Image
 
-EXTENSIONS = ('.pdf', '.ai', '.docx', '.xlsx', '.pptx', '.png', '.jpg', '.jpeg', '.webp', '.jxl')
+EXTENSIONS = ('.cdr', '.psd', '.pdf', '.ai', '.docx', '.xlsx', '.pptx', '.png', '.jpg', '.jpeg', '.webp', '.jxl')
 
 
 def inspect_input(path, output, name, pdf_reader):
     suffix = Path(name).suffix.lower()
+    if suffix in ('.cdr', '.psd'):
+        return {'state':'unsupported','file_kind':suffix[1:],'reason':'Nguồn '+suffix.upper()+' đã nhận trên NAS; chưa có bộ tách từng vị trí PET cho định dạng này. Giữ nguồn, cần chuyển đúng artwork sang PDF/AI hoặc bổ sung bộ xuất; không tự xuất cả trang.','previews':[],'object_inventory':{'objects':[]}}
     if suffix in ('.pdf', '.ai'):
         return pdf_reader(path, output, name)
     output = Path(output)

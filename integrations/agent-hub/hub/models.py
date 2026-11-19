@@ -37,6 +37,11 @@ class QuotedImage(StrictModel):
     resolved: bool
 
 
+class QuotedFile(QuotedImage):
+    name: str = Field(default='', max_length=200)
+    error: str = Field(default='', max_length=200)
+
+
 class ConversationEvidence(StrictModel):
     image: ImageInput
     source_digest: str = Field(pattern=r'^[a-f0-9]{64}$')
@@ -62,6 +67,7 @@ class Capture(StrictModel):
     revision: int = Field(default=0, ge=0)
     recalled: bool = False
     quoted_image: QuotedImage | None = None
+    quoted_file: QuotedFile | None = None
     conversation_evidence: ConversationEvidence | None = None
 
 
@@ -83,6 +89,7 @@ class Decision(StrictModel):
 
 
 class IntakeOrderLine(OrderLine):
+    ten_don_hang: str | None = Field(default=None, max_length=500, description="Tên/mã đơn nguyên văn trên phiếu, ví dụ GV2VB-HHG.11; không thêm chất liệu hay vị trí in; không đọc được để null. Các dòng cùng đơn dùng cùng tên.")
     print_position_group: str | None = Field(default=None, min_length=1, max_length=100)
     ma_san_pham: str | None = Field(default=None, min_length=1, max_length=200)
 
