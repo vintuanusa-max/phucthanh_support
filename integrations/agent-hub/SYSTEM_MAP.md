@@ -476,3 +476,7 @@ See KPI-VA-LOI-SAN-XUAT.md. Enabled only new messages in verified Zalo/WhatsApp 
 See ../../docs/PSD_SAMPLES.md. psd_samples.py queues sample-only work without ERP writes; psd_worker.py exports original-size CMYK JPG and private preview. Files stay under customer/DESIGNER/model/sample_job; source hashes and local journal prevent duplicate exports.
 
 2026-11-01: Expired quoted PET image -> native Windows MSAA/PrintWindow conversation evidence, separate from AI/design images. Text-only single-addition fast path retains intake ERP idempotency. See QUOTE_SCREENSHOT_FALLBACK.md for scope, checks and safe-stop limits.
+
+
+## PET — cập nhật 23/11/2026
+Đã áp dụng chọn đủ path/lớp trắng và fallback PDF liên kết lỗi, quy đổi UserUnit. Xem docs/PET_SOURCE_ARTWORK_CHECKLIST.md tại gốc repo để biết điều kiện, kiểm thử và giới hạn. Không replay hồ sơ cũ.

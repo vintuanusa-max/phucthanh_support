@@ -71,3 +71,7 @@ Tra cứu: [Tổng quan](../TONG_QUAN_HE_THONG.md).
 - [x] Code kiểm tra tác giả, nguồn, số lượng, ánh xạ khách và ERP; đối chiếu lại trước ghi. Tổng đã có không tạo thêm; đặt thêm vẫn qua khóa nguồn và quy tắc trạng thái hiện có. Không phát lại nguồn đã tạo/đang gửi/chưa rõ kết quả.
 - [x] Bản triển khai: semantic-confirmation-20261027. 151 ca kiểm thử cách ly đạt; thử8 hội thoại giả qua Gemini thật, chỉnh quy tắc total/new và thử lại2ca đạt. Có1ReadTimeout đã thử lại. Không tạo đơn thật khi thử.
 - [ ] Theo dõi thực tế — Giới hạn: nhiều yêu cầu chưa tách chắc vẫn review; kết quả thử không chứng minh hiểu mọi hội thoại ngoài thực tế.
+
+
+## PET — cập nhật 23/11/2026
+Đã áp dụng chọn đủ path/lớp trắng và fallback PDF liên kết lỗi, quy đổi UserUnit. Xem docs/PET_SOURCE_ARTWORK_CHECKLIST.md tại gốc repo để biết điều kiện, kiểm thử và giới hạn. Không replay hồ sơ cũ.
