@@ -1,6 +1,6 @@
 ﻿<#
 .SYNOPSIS
-Sync ASCII designer folder naming scripts and install pinned spot-deps (tifffile, numpy, imagecodecs) for Windows Artwork Worker (designer-main / local-backup).
+Sync ASCII designer folder naming scripts and install spot-deps (tifffile, numpy, imagecodecs) for Windows Artwork Worker (designer-main / local-backup).
 Never modifies worker credentials/configs and NEVER closes Illustrator/Photoshop/CorelDRAW.
 #>
 [CmdletBinding()]
@@ -23,19 +23,27 @@ $FilesToSync = @(
 )
 $ReqFile = Join-Path $SourceDir 'spot-deps-requirements.txt'
 
+function Get-WorkerCimProcesses {
+    try {
+        return @(Get-CimInstance Win32_Process -ErrorAction Stop |
+            Where-Object { $_.Name -match '^python' -and $_.CommandLine -match '(ArtworkInspector|PHUCTHANH_HUB_WORKER)\\(fleet_runner|worker)\.py' })
+    } catch {
+        return @()
+    }
+}
+
 function Resolve-WorkerContext {
     param([string]$RequestedDir, [string]$RequestedPy)
 
-    $proc = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -match '^python' -and $_.CommandLine -match 'ArtworkInspector\\(fleet_runner|worker)\.py' } |
-        Select-Object -First 1
+    $proc = Get-WorkerCimProcesses | Select-Object -First 1
 
     $dir = $RequestedDir
-    if (-not $dir -and $proc -and $proc.CommandLine -match '([A-Za-z]:\\[^"]+?ArtworkInspector)\\(?:fleet_runner|worker)\.py') {
+    if (-not $dir -and $proc -and $proc.CommandLine -match '([A-Za-z]:\\[^"]*?(?:ArtworkInspector|PHUCTHANH_HUB_WORKER))\\(?:fleet_runner|worker)\.py') {
         $dir = $Matches[1]
     }
     if (-not $dir) {
         $candidates = @(
+            'G:\PHUCTHANH_HUB_WORKER',
             (Join-Path $env:LOCALAPPDATA 'PhucThanh\ArtworkInspector'),
             'C:\Users\Admin\AppData\Local\PhucThanh\ArtworkInspector'
         )
@@ -44,7 +52,7 @@ function Resolve-WorkerContext {
         }
     }
     if (-not $dir -or -not (Test-Path -LiteralPath $dir)) {
-        throw "Khong tim thay thu muc ArtworkInspector (hay truyen -WorkerDir <duong dan>)."
+        throw "Khong tim thay thu muc worker (hay truyen -WorkerDir <duong dan>)."
     }
 
     $py = $RequestedPy
@@ -56,7 +64,9 @@ function Resolve-WorkerContext {
             (Join-Path $dir '.venv\Scripts\python.exe'),
             (Join-Path (Split-Path $dir -Parent) 'ZaloDesktopReader\code\.venv\Scripts\python.exe'),
             (Join-Path $env:LOCALAPPDATA 'PhucThanh\ArtworkInspector\.venv\Scripts\python.exe'),
-            (Join-Path $env:LOCALAPPDATA 'PhucThanh\ZaloDesktopReader\code\.venv\Scripts\python.exe')
+            (Join-Path $env:LOCALAPPDATA 'PhucThanh\ZaloDesktopReader\code\.venv\Scripts\python.exe'),
+            (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python310\python.exe'),
+            (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python311\python.exe')
         )
         foreach ($p in $pyCandidates) {
             if ($p -and (Test-Path -LiteralPath $p)) { $py = $p; break }
@@ -68,6 +78,10 @@ function Resolve-WorkerContext {
     }
     if (-not $py -or -not (Test-Path -LiteralPath $py)) {
         throw "Khong tim thay python.exe cua worker (hay truyen -PythonExe <duong dan>)."
+    }
+    if ((Split-Path -Leaf $py).ToLowerInvariant() -eq 'pythonw.exe') {
+        $consolePy = Join-Path (Split-Path -Parent $py) 'python.exe'
+        if (Test-Path -LiteralPath $consolePy) { $py = $consolePy }
     }
     return @{ WorkerDir = $dir; PythonExe = $py }
 }
@@ -107,11 +121,11 @@ if (-not $CheckOnly) {
     $uvCmd = Get-Command uv -ErrorAction SilentlyContinue
     if ($uvCmd) {
         Write-Host "[INFO] Dang cai spot-deps bang uv..."
-        & $uvCmd.Source pip install --python $TargetPy --target $SpotDepsDir --upgrade -r $ReqFile
+        & $uvCmd.Source pip install --python $TargetPy --target $SpotDepsDir --upgrade --only-binary=:all: -r $ReqFile
         if ($LASTEXITCODE -ne 0) { throw "uv pip install that bai (exit=$LASTEXITCODE)" }
     } else {
         Write-Host "[INFO] Dang cai spot-deps bang python -m pip..."
-        & $TargetPy -m pip install --target $SpotDepsDir --upgrade -r $ReqFile
+        & $TargetPy -m pip install --target $SpotDepsDir --upgrade --only-binary=:all: -r $ReqFile
         if ($LASTEXITCODE -ne 0) { throw "pip install that bai (exit=$LASTEXITCODE)" }
     }
     Write-Host "[OK] Da cai dat tifffile, numpy, imagecodecs vao $SpotDepsDir."
@@ -171,8 +185,7 @@ try {
 }
 
 if (-not $CheckOnly -and -not $SkipRestart) {
-    $workerProcs = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -match '^python' -and $_.CommandLine -match 'ArtworkInspector\\(fleet_runner|worker)\.py' })
+    $workerProcs = Get-WorkerCimProcesses
     if ($workerProcs.Count -gt 0) {
         Write-Host "[INFO] Dang khoi dong lai $($workerProcs.Count) tien trinh worker Python (khong dong toi Photoshop/Illustrator/Corel)..."
         foreach ($wp in $workerProcs) {
@@ -181,20 +194,41 @@ if (-not $CheckOnly -and -not $SkipRestart) {
         Start-Sleep -Seconds 2
     }
 
-    $task = Get-ScheduledTask -ErrorAction SilentlyContinue |
-        Where-Object { $_.TaskName -match 'PhucThanh.*(Export|Monitor|Artwork|Fleet)' } |
-        Select-Object -First 1
-    if ($task) {
-        Start-ScheduledTask -TaskName $task.TaskName
-        Write-Host "[OK] Da kich hoat Scheduled Task '$($task.TaskName)'."
-    } else {
+    $started = $false
+    $startupLnk = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Startup\PhucThanh Hub Worker.lnk'
+    if (Test-Path -LiteralPath $startupLnk) {
+        Start-Process -FilePath $startupLnk
+        Write-Host "[OK] Da khoi dong worker qua '$startupLnk'."
+        $started = $true
+    }
+
+    if (-not $started) {
+        $task = $null
+        try {
+            $task = Get-ScheduledTask -ErrorAction Stop |
+                Where-Object { $_.TaskName -match 'PhucThanh.*(Export|Monitor|Artwork|Fleet)' } |
+                Select-Object -First 1
+        } catch {
+            $task = $null
+        }
+        if ($task) {
+            Start-ScheduledTask -TaskName $task.TaskName
+            Write-Host "[OK] Da kich hoat Scheduled Task '$($task.TaskName)'."
+            $started = $true
+        }
+    }
+
+    if (-not $started) {
         $startPs1 = Join-Path $TargetDir 'Start.ps1'
         if (Test-Path -LiteralPath $startPs1) {
             & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $startPs1
             Write-Host "[OK] Da chay lai worker bang '$startPs1'."
-        } else {
-            Write-Host "[WARN] Khong tim thay Scheduled Task Watchdog hay Start.ps1; hay mo lai worker thu cong."
+            $started = $true
         }
+    }
+
+    if (-not $started) {
+        Write-Host "[WARN] Chua tu dong khoi dong lai duoc; hay mo lai worker thu cong."
     }
 }
 
