@@ -1,3 +1,4 @@
+from hub.ai_usage import tracked_run
 """Independent, durable new-message order intake. Never sends public replies."""
 
 import base64
@@ -42,7 +43,7 @@ def sender_key(message):
 
 
 def piece_quantities(text):
-    values = re.findall(r"(?<![\w.])(\d{1,3}(?:\.\d{3})+|\d+(?:[.,]\d+)?)\s*(?:c\b|cái\b)", text, re.I)
+    values = re.findall(r"(?<![\w.])(\d{1,3}(?:\.\d{3})+|\d+(?:[.,]\d+)?)\s*(?:c\b|cái\b|chiếc\b|áo\b|nón\b|tấm\b|bộ\b|pet\b)", text, re.I)
     return {
         Decimal(v.replace(".", "") if re.fullmatch(r"\d{1,3}(?:\.\d{3})+", v) else v.replace(",", "."))
         for v in values
@@ -112,9 +113,9 @@ class OrderIntake:
     def policy(self, account):
         with self.store.db() as db:
             row = db.execute("SELECT * FROM intake_policy WHERE account=?", (account,)).fetchone()
-        if not row or row["updated"] < time.time() - 120:
-            return None  # A disconnected/malformed source config must stop new orders.
-        return json.loads(row["payload"])
+        if row:
+            return json.loads(row["payload"])
+        return self.engine.settings.inboxes.get(account, {}).get("capture_policy")
 
     def scope(self, account):
         return self.engine.settings.inboxes.get(account, {}).get("order_intake", {})
@@ -123,7 +124,9 @@ class OrderIntake:
         from hub.quality_monitor import monitored
         if monitored(message["account"],message["thread_id"]):return False
         cfg = self.engine.settings.inboxes.get(message["account"], {})
-        if cfg.get('production_slips',{}).get('auto_order'):
+        from hub.unified_intake import new_message, context_eligible
+        unified=new_message(message)
+        if not unified and cfg.get('production_slips',{}).get('auto_order'):
             with self.store.db() as db:
                 reserved=db.execute("SELECT 1 FROM production_slips WHERE account=? AND thread_id=? AND message_id=? AND state IN ('classifying','review','copy_pending','copied')",(message['account'],message['thread_id'],message['message_id'])).fetchone()
             if reserved:return False
@@ -132,10 +135,12 @@ class OrderIntake:
         agent_scope=self.agent_loop.scope(message)
         if agent_scope and policy is not None:
             channel=cfg.get('channel')
-            if not allowed(policy,channel,message['display_name'],'receive_messages'):return False
+            if not allowed({**policy,channel+'_disable_reply_groups':[]},channel,message['display_name'],'receive_messages'):return False
             policy=dict(policy)
             policy[channel+'_default_auto_order']=True
             policy[channel+'_contact_rules']=[{**r,'auto_order':True} for r in policy.get(channel+'_contact_rules',[])]
+        if unified and policy is not None:
+            return bool(scope.get("enabled_after") and message["timestamp"]>=scope["enabled_after"] and context_eligible(policy,cfg.get("channel"),message))
         return bool(
             scope.get("enabled_after")
             and policy is not None
@@ -165,13 +170,16 @@ class OrderIntake:
     def state(self, identity, state, result=None):
         if state == 'review':
             from hub.intake_intent import classify, evidence, HISTORY
+            from hub.intake_text_conversation import chat_display_state
             with self.store.db() as db:
                 row=db.execute('SELECT * FROM intake_runs WHERE id=?',(identity,)).fetchone()
                 proposals=db.execute('SELECT 1 FROM agent_proposals WHERE run_id=? LIMIT 1',(identity,)).fetchone()
                 if row and row['state'] not in ('sending','uncertain','created','duplicate') and not proposals:
-                    p=json.loads(row['payload']);category,why=classify(evidence(db,row,p),p,result)
+                    p=json.loads(row['payload']);ev_msgs=evidence(db,row,p);category,why=classify(ev_msgs,p,result)
                     if category in HISTORY:
                         state='ignored';result={**(result or {}),'intent':category,'reason':why,'erp_committed':False}
+                        if 'display_state' not in result and ev_msgs:
+                            result['display_state']=chat_display_state(ev_msgs)
         with self.store.db() as db:
             db.execute(
                 "UPDATE intake_runs SET state=?,result=? WHERE id=?",
@@ -183,6 +191,8 @@ class OrderIntake:
 
     def poll(self):
         """One operation at a time; claims survive restart without replaying writes."""
+        from hub.intake_operator_retry import poll as poll_operator_retry
+        if poll_operator_retry(self):return True
         from hub.intake_models import poll as poll_models
         if poll_models(self):return True
         if self.additions.recover_notice():return True
@@ -200,8 +210,8 @@ class OrderIntake:
                 supplements = db.execute(
                     "SELECT c.payload FROM captures c LEFT JOIN intake_sources s ON s.capture_id=c.id "
                     "WHERE c.account=? AND c.thread_id=? AND s.capture_id IS NULL "
-                    "AND json_extract(c.payload,'$.timestamp')>=?",
-                    (expired['account'], expired['thread_id'], pending_payload.get('last_timestamp', expired['created'])),
+                    "AND json_extract(c.payload,'$.timestamp')>=? AND json_extract(c.payload,'$.timestamp')<=?",
+                    (expired['account'], expired['thread_id'], pending_payload.get('last_timestamp', expired['created']), deadline),
                 ).fetchall()
             if self.quiet_now(dict(expired), pending_payload) and not any(self.accepts(json.loads(r[0])) for r in supplements):
                 if self.image_timeout_review(dict(expired), pending_payload):
@@ -213,9 +223,13 @@ class OrderIntake:
             waiting = db.execute(
                 "SELECT * FROM intake_runs WHERE state='evidence_ready' ORDER BY created"
             ).fetchall()
-            waiting = next((x for x in waiting if self.engine.intake_management.enabled(x['account'])),None)
-        if waiting:
-            self.submit(dict(waiting))
+        for x in waiting:
+            if not self.engine.intake_management.enabled(x['account']):
+                continue
+            row = dict(x)
+            if self.policy(row['account']) is None or not self.quiet_now(row, json.loads(row['payload'])):
+                continue
+            self.submit(row)
             return True
         for account, cfg in self.engine.settings.inboxes.items():
             if not self.engine.intake_management.enabled(account):continue
@@ -246,66 +260,36 @@ class OrderIntake:
                 # Load the complete customer group stream, not only the first 200 global rows.
                 with self.store.db() as db:
                     stream = db.execute(
-                        "SELECT c.id,c.payload,j.state AS job_state,s.run_id AS source_run FROM captures c "
+                        "SELECT c.rowid AS sequence,c.id,c.payload,j.created AS received,j.state AS job_state,s.run_id AS source_run FROM captures c "
                         "LEFT JOIN jobs j ON j.id=c.id LEFT JOIN intake_sources s ON s.capture_id=c.id "
                         "WHERE c.account=? AND c.thread_id=? "
                         "AND json_extract(c.payload,'$.timestamp')>=? ORDER BY json_extract(c.payload,'$.timestamp'),c.rowid",
                         (account, message['thread_id'], scope['enabled_after'])).fetchall()
                 from hub.intake_quiet import human_activity
                 candidates = []
-                for r in stream:
-                    m = json.loads(r['payload'])
-                    if m['timestamp'] < message['timestamp']:
-                        continue
-                    if r['source_run'] is None and self.accepts(m):
+                from hub.late_capture_batch import window,recoverable
+                wait=self.engine.intake_management.seconds()
+                members=window(stream,identity,wait)
+                member_ids={r['id'] for r,m in members}
+                with self.store.db() as db:
+                    reclaim={rid for rid in {r['source_run'] for r,m in members} if rid and recoverable(db,rid,member_ids)}
+                for r,m in members:
+                    if (r['source_run'] is None or r['source_run'] in reclaim) and self.accepts(m):
                         candidates.append((r['id'], m, r['job_state']))
                     elif human_activity(m) and not self.accepts(m):
                         candidates.append((None, m, 'done'))
                 from hub.intake_quiet import settled_batch
-                selected = settled_batch(candidates, time.time(), self.engine.intake_management.seconds())
+                from hub.intake_run_now import ticket as run_now_ticket
+                manual_ticket=run_now_ticket(self.store,account,message['thread_id'],candidates,self.engine.intake_management.seconds())
+                sync_settle = min(wait, 120)
+                selected = settled_batch(candidates, time.time(), self.engine.intake_management.seconds(),force=bool(manual_ticket))
+                if not manual_ticket and any(time.time()<float(r['received'] or m['timestamp'])+sync_settle for r,m in members):
+                    continue
                 if not selected:
                     continue
                 batch = [(i,m) for i,m,_ in selected if i is not None]
-                with self.store.db() as db:
-                    db.execute(
-                        "UPDATE intake_runs SET state='waiting_details',payload=json_remove(payload,'$.request_id','$.orders','$.image_base64','$.nas_evidence','$.image_groups_verified','$.image_timeout_attempted','$.print_line_sources') WHERE account=? AND thread_id=? "
-                        "AND state IN ('awaiting_evidence','evidence_ready') "
-                        "",
-                        (account, message['thread_id']),
-                    )
-                # Recover uncommitted image context when text arrives after the settle window.
-                with self.store.db() as db:
-                    prior = db.execute(
-                        "SELECT c.id,c.payload,r.result AS source_result FROM captures c JOIN intake_sources s ON s.capture_id=c.id "
-                        "JOIN intake_runs r ON r.id=s.run_id AND (r.state IN ('ignored','waiting_details') OR (r.state='review' AND (?=1 OR (?=1 AND (json_extract(r.result,'$.reason') IN ('Đã hết thời gian chờ cấu hình, chưa đủ thông tin','Đã đọc ảnh sau 30 phút; chưa xác định đủ dữ liệu đơn mới') OR EXISTS(SELECT 1 FROM agent_actions a WHERE a.run_id=r.id AND a.state='done' AND (a.tool='request_customer_clarification' OR (a.tool='escalate_to_human' AND instr(lower(json_extract(a.args,'$.reason')),'số lượng')>0) OR (a.tool='prepare_print_quote' AND json_extract(a.result,'$.state')='missing_fields')))))) AND json_extract(r.payload,'$.submitted_payload') IS NULL AND json_extract(r.payload,'$.request_id') IS NULL)) "
-                        "WHERE json_extract(r.payload,'$.submitted_payload') IS NULL AND json_extract(r.payload,'$.request_id') IS NULL AND c.account=? AND c.thread_id=? AND json_extract(c.payload,'$.timestamp')>=? "
-                        "AND json_extract(c.payload,'$.timestamp')<? AND date(json_extract(c.payload,'$.timestamp'),'unixepoch','+7 hours')=date(?,'unixepoch','+7 hours') ORDER BY c.rowid DESC LIMIT 12",
-                        (
-                            int(any(confirms_order(m['text']) for _,m in batch)),
-                            int(any(re.search(r'\d+\s*(?:cái|chiếc|c|cm|mét|met|bộ|áo)\b|^\s*\d+\s*$',key(m['text'])) for _,m in batch)),
-                            account,
-                            message["thread_id"],
-                            max(scope["enabled_after"], message["timestamp"] - 86400),
-                            message["timestamp"],
-                            message["timestamp"],
-                        ),
-                    ).fetchall()
-                from hub.intake_lifecycle import reusable, explicit_addition
-                with self.store.db() as db:
-                    prior = [r for r in prior if reusable(db, r)]
-                # A new addition uses its fresh quantity; old design remains available
-                # through explicit quote/history, never promoted into the new batch.
-                if explicit_addition([m for _, m in batch]):
-                    prior = []
-                context = [(r["id"], json.loads(r["payload"])) for r in prior]
-                context = [
-                    (i, m)
-                    for i, m in context
-                    if sender_key(m) == sender_key(message) and self.accepts(m)
-                ]
-                batch = sorted(
-                    context + batch, key=lambda item: (item[1]["timestamp"], item[1]["message_id"])
-                )
+                # Each settled batch owns only its new sources. Never pull sources
+                # from prior ignored/review/waiting runs or invalidate their evidence.
                 mapping = self.store.thread(account=account, thread_id=message["thread_id"])
                 if not mapping:
                     continue
@@ -322,11 +306,26 @@ class OrderIntake:
                     "sender": message["sender"],
                     "sender_key": sender_key(message),
                     "collection_scope": "group",
+                    "unified_intake": all(__import__("hub.unified_intake",fromlist=["new_message"]).new_message(m) for _,m in batch),
                     "first_timestamp": min(m['timestamp'] for _, m in batch),
                     "last_timestamp": max(m['timestamp'] for _, m in batch),
                 }
                 with self.store.db() as db:
                     db.execute("BEGIN IMMEDIATE")
+                    latest=db.execute('SELECT max(rowid) FROM captures WHERE account=? AND thread_id=?',(account,message['thread_id'])).fetchone()[0]
+                    if latest!=max(r['sequence'] for r in stream) or any(not recoverable(db,rid,member_ids) for rid in reclaim):
+                        continue
+                    owners=db.execute("SELECT DISTINCT run_id FROM intake_sources WHERE capture_id IN (SELECT value FROM json_each(?))",(json.dumps([cid for cid,_ in batch]),)).fetchall()
+                    if any(r[0] not in reclaim for r in owners):
+                        continue
+                    if manual_ticket:
+                        claimed=db.execute("UPDATE intake_run_now SET state='consumed',run_id=? WHERE id=? AND state='queued'",(run_id,manual_ticket)).rowcount
+                        if not claimed:continue
+                        payload['manual_quiet_until']=max(m['timestamp'] for _,m,_ in selected)
+                        payload['manual_run_request']=manual_ticket
+                    for rid in reclaim:
+                        db.execute("UPDATE intake_runs SET state='superseded',result=? WHERE id=?",(json.dumps({'merged_into':run_id,'reason':'Nguồn đến muộn trong cùng đợt, đã gom để phân tích chung'}),rid))
+                        db.execute('DELETE FROM intake_sources WHERE run_id=?',(rid,))
                     db.execute(
                         "INSERT INTO intake_runs(id,account,thread_id,conversation,state,payload,created) "
                         "VALUES(?,?,?,?,'analyzing',?,?)",
@@ -339,18 +338,11 @@ class OrderIntake:
                             time.time(),
                         ),
                     )
-                    db.executemany(
-                        "DELETE FROM intake_sources WHERE capture_id=? AND run_id IN "
-                        "(SELECT id FROM intake_runs WHERE state IN ('ignored','waiting_details') OR (state='review' AND json_extract(payload,'$.submitted_payload') IS NULL AND json_extract(payload,'$.request_id') IS NULL))",
-                        [(i,) for i, _ in context],
-                    )
                     db.executemany("INSERT INTO intake_sources VALUES(?,?)", [(i, run_id) for i, _ in batch])
-                    db.execute("UPDATE intake_runs SET state='superseded' WHERE state IN ('waiting_details','review') "
-                               "AND id NOT IN (SELECT run_id FROM intake_sources)")
                 try:
                     self.analyze(run, payload, batch)
                 except Exception as exc:
-                    self.state(run_id, "review", {"reason": type(exc).__name__})
+                    self.state(run_id, "review", {"reason": __import__("hub.intake_errors",fromlist=["detail"]).detail(exc)})
                     reason = "Lỗi phân tích/kiểm tra dữ liệu"
                     if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in (409, 422):
                         reason = (
@@ -367,20 +359,44 @@ class OrderIntake:
         return False
 
     def quiet_now(self, run, payload):
+        # A verified single-slip task is independent of later unrelated group traffic.
+        if payload.get('proposal_parent') and payload.get('verified_proposal_id'):
+            from hub.agent_order_tasks import saved_proposal
+            with self.store.db() as db:
+                parent=db.execute('SELECT account,thread_id,payload FROM intake_runs WHERE id=?',(payload['proposal_parent'],)).fetchone()
+                draft=saved_proposal(db,payload['proposal_parent'],payload['verified_proposal_id'])
+            if (parent and parent['account']==run['account'] and parent['thread_id']==run['thread_id']
+                    and json.loads(parent['payload']).get('individual_slip') and draft
+                    and set(draft['source_message_ids'])==set(payload.get('messages',[]))):
+                return True
         latest = float(payload.get('last_timestamp', payload.get('first_timestamp', run.get('created',0))))
         with self.store.db() as db:
             rows = db.execute("SELECT payload FROM captures WHERE account=? AND thread_id=? AND json_extract(payload,'$.timestamp')>?",
                               (run['account'],run['thread_id'],latest)).fetchall()
         from hub.intake_quiet import human_activity
+        wait_seconds = self.engine.intake_management.seconds()
         activity_latest = latest
-        for row in rows:
-            message=json.loads(row[0])
+        for message in sorted((json.loads(row[0]) for row in rows), key=lambda m: float(m['timestamp'])):
+            if not human_activity(message):
+                continue
+            # A completed quiet window closes this batch. Later conversations
+            # belong to a new batch, even when they have already been captured.
+            if float(message['timestamp']) > activity_latest + wait_seconds:
+                break
             if human_activity(message):
                 activity_latest = max(activity_latest, float(message['timestamp']))
             if self.accepts(message):
+                # After evidence is ready, later messages already reviewed in their own batch
+                # no longer count as uncollected. Keep the quiet timer and quantity checks.
+                if run.get('state') == 'evidence_ready' and payload.get('text_quantity_order'):
+                    with self.store.db() as db:
+                        separate = db.execute("SELECT 1 FROM intake_runs r, json_each(r.payload,'$.messages') m WHERE r.account=? AND r.thread_id=? AND r.id<>? AND r.state IN ('review','ignored','created','duplicate') AND m.value=? LIMIT 1", (run['account'],run['thread_id'],run['id'],message['message_id'])).fetchone()
+                    if separate and not __import__('re').search(r'\d|\b(?:hủy|huỷ|đổi|thôi|khoan|dừng|giảm|tăng|chỉnh|thêm|bớt|nhầm|sai)\b', __import__('re').sub(r'\b\d+\s+ảnh\s+chụp\b', 'ảnh chụp', message.get('text','').casefold().replace('[tin zalo loại 2; xem trên ứng dụng zalo]',''))):
+                        continue
                 # A new source has not yet been incorporated, even if its timer expired.
                 return False
-        return time.time() >= activity_latest + self.engine.intake_management.seconds()
+        return (activity_latest <= float(payload.get('manual_quiet_until',0))
+                or time.time() >= activity_latest + wait_seconds)
 
     def image_timeout_review(self, run, payload):
         # Claim once before calling Gemini; restarts recover analyzing to review.
@@ -394,11 +410,15 @@ class OrderIntake:
                 if not row:
                     return False
                 m = json.loads(row['payload'])
-                if m.get('revision') or m.get('recalled') or not self.accepts(m):
-                    return False
+                if m.get('revision') or m.get('recalled'):
+                    continue # Retired source must not veto a fresh replacement image.
+                if not self.accepts(m):return False
                 batch.append((row['id'], m))
             if not any(m.get('images') for _, m in batch):
                 return False
+            active_ids=[m['message_id'] for _,m in batch]
+            payload['retired_source_message_ids']=list(dict.fromkeys(payload.get('retired_source_message_ids',[])+[mid for mid in payload['messages'] if mid not in active_ids]))
+            payload['messages']=active_ids
             payload['image_timeout_attempted'] = True
             claimed = db.execute("UPDATE intake_runs SET state='analyzing',payload=? WHERE id=? AND state='waiting_details'",
                                  (json.dumps(payload, ensure_ascii=False), run['id'])).rowcount
@@ -416,22 +436,152 @@ class OrderIntake:
         self.notify(run, 'CẦN NHÂN VIÊN: Đã kiểm tra ảnh sau 30 phút nhưng số lượng/đơn mới chưa rõ, ảnh không đọc được hoặc dữ liệu mâu thuẫn.')
         return True
 
+    @tracked_run
     def analyze(self, run, payload, batch, *, image_timeout=False, agent_decision=None):
         if not self.quiet_now(run, payload):
             self.state(run['id'], 'waiting_details', {'reason':'Chờ đủ thời gian cấu hình từ tin cuối của đợt khách gửi'})
             return
-        messages = [m for _, m in batch]
+        from hub.group_intake_rules import filter_messages, only_ignored_images
+        filtered=filter_messages(self.policy(run['account']),run['account'],[m for _,m in batch])
+        batch=[(pair[0],msg) for pair,msg in zip(batch,filtered)]
+        messages = filtered
+        file_job = None
+        if agent_decision is None:
+            # File dispatch remains independent from ERP quantity extraction.
+            from hub.file_intake_branch import enqueue
+            file_job = enqueue(self, run, messages)
+            # Resolve configured staff identities before quantity or image routing.
+            context = self.context_gate.build(run, messages)
+            roles = {m['message_id']: m['role'] for m in context['batch']}
+            messages = [dict(m, origin=roles.get(m['message_id'], m.get('origin', 'customer'))) for m in messages]
+            batch = [(pair[0], m) for pair, m in zip(batch, messages)]
+            active = [m for m in messages if not m.get('recalled') and not m.get('revision')]
+            if active and all(m.get('origin') == 'staff' for m in active):
+                self.state(run['id'], 'ignored', {'display_state':'Nhân viên gửi', 'intent':'staff_only', 'reason':'Nhân viên gửi thông tin/mẫu; chưa có phản hồi đặt hàng của khách.', 'no_action':True, 'image_read':False})
+                return
+            from hub.intake_text_conversation import chat_display_state, conversation_state
+            conversation = conversation_state(messages)
+            if conversation:
+                self.state(run['id'], 'ignored', {'display_state':conversation, 'intent':'text_conversation', 'reason':'Tin chữ không có nguồn ảnh/file hoặc số lượng đặt hàng; không gọi AI.', 'no_action':True, 'image_read':False})
+                return
+            from hub.intake_logistics import logistics_only, norm as _approval_norm
+            if logistics_only(messages):
+                ds = chat_display_state(messages)
+                self.state(run['id'], 'ignored', {'display_state':ds, 'intent':'logistics', 'reason':'Trao đổi giao nhận/tiến độ hàng đã in; không có yêu cầu đặt mới.', 'no_action':True, 'image_read':False})
+                return
+            _cust_msgs = [m for m in messages if not m.get('recalled') and not m.get('revision') and m.get('origin') == 'customer' and m.get('direction', 'incoming') == 'incoming']
+            if _cust_msgs and not any(
+                any(m.get(k) for k in ('images', 'assets', 'attachments', 'quoted_image', 'quoted_file'))
+                or re.search(r'\d|https?://|\[anh zalo|\[file zalo', _approval_norm(m.get('text', '')))
+                or re.search(r'\b(?:mot|hai|ba|bon|nam|sau|bay|tam|chin|muoi|tram|nghin|ngan|chuc)\s+(?:cai|tam|met|non|bo|chiec)\b', _approval_norm(m.get('text', '')))
+                or re.search(r'\b(?:dat them|in them|lam them|in bu|bu cho|bu them|len mau|lam mau|ve mau|ve lai|sua mau|dat hang|so luong|sl|bao gia|hoi gia|chot tong|them)\b', _approval_norm(m.get('text', '')))
+                for m in _cust_msgs
+            ):
+                _cids = [m['message_id'] for m in _cust_msgs if m.get('message_id')]
+                _pa = None
+                if _cids:
+                    _marks = ','.join('?' for _ in _cids)
+                    with self.store.db() as db:
+                        if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='print_approvals'").fetchone():
+                            _pa = db.execute(
+                                f"SELECT id, state FROM print_approvals WHERE account=? AND thread_id=? AND confirmation_id IN ({_marks}) AND state IN ('awaiting_evidence','ready','confirmed') LIMIT 1",
+                                (run['account'], run['thread_id'], *_cids),
+                            ).fetchone()
+                if _pa:
+                    ds = chat_display_state(messages)
+                    self.state(run['id'], 'ignored', {
+                        'display_state': ds,
+                        'intent': 'print_approval',
+                        'approval_id': _pa['id'],
+                        'reason': f"Khách duyệt in mẫu (đã chuyển luồng duyệt in CHOT-IN-{_pa['id'][:16]}); không có số lượng/yêu cầu đặt đơn ERP mới nên không gọi AI.",
+                        'no_action': True,
+                        'image_read': False,
+                    })
+                    return
+            from hub.individual_slips import run as read_individual_slips
+            if read_individual_slips(self,run,messages):return
+            from hub.canavi_slip_policy import sender_id as canavi_primary_sender
+            if not payload.get('individual_slip') and canavi_primary_sender(self.policy(run['account']), run):
+                from hub.psd_samples import collect as collect_psd_sample
+                if not file_job and collect_psd_sample(self, run, messages):
+                    return
+                ds = chat_display_state(messages)
+                self.state(run['id'], 'ignored', {
+                    'display_state': ds,
+                    'intent': 'canavi_no_slip',
+                    'reason': 'Nhóm CANAVI chỉ lên đơn ERP từ ảnh Phiếu Lệnh của người gửi phiếu chính; cụm này không có phiếu lệnh hợp lệ nên không gọi AI lên đơn.',
+                    'no_action': True,
+                    'image_read': False,
+                })
+                return
+            from hub.text_quantity_orders import split_explicit, try_prepare
+            if split_explicit(self, run, payload, messages):return
+            if not payload.get('_semantic_fallback') and try_prepare(self, run, payload, messages):return
+            from hub.text_quantity_policy import text_quantity
+            from hub.intake_semantic_fallback import candidate
+            if not payload.get('_semantic_fallback') and not text_quantity(messages) and not candidate(messages):
+                ds = chat_display_state(messages)
+                reason = ('Khách nhắn/hỏi; chưa có nhân viên trả lời và chưa có số lượng đặt hàng.'
+                          if ds == 'Khách hỏi'
+                          else 'Trao đổi giữa khách và nhân viên; chưa có số lượng đặt hàng.')
+                self.state(run['id'],'ignored',{'display_state':ds,'intent':'conversation','reason':reason,'no_action':True,'image_read':False})
+                return
+        if only_ignored_images(messages):
+            self.state(run['id'],'ignored',{'reason':'Ảnh không thuộc người gửi phiếu chính của nhóm; không gọi AI','no_action':True,'image_read':False})
+            return
+        # Trust only the exact proposal already verified and durably saved by Agent.
+        verified_batch = False
+        if agent_decision is not None and payload.get('unified_intake'):
+            with self.store.db() as db:
+                saved = db.execute('SELECT p.payload FROM agent_proposals p JOIN agent_runs a ON a.id=p.run_id WHERE p.run_id=? AND a.state=?', (run['id'], 'completed')).fetchall()
+            if len(saved) == 1:
+                from hub.agent_loop import Draft
+                draft = Draft.model_validate_json(saved[0][0])
+                expected_ids = [n for n, m in enumerate(messages, 1) if m['message_id'] in draft.source_message_ids]
+                verified_batch = (agent_decision.orders == draft.items and sorted(agent_decision.source_message_ids) == expected_ids)
+        if agent_decision is not None and payload.get('verified_proposal_id'):
+            from hub.agent_order_tasks import verified_child
+            with self.store.db() as db:
+                verified_batch = verified_child(db,run,payload,messages,[o.model_dump(mode='json') for o in agent_decision.orders])
+            if not verified_batch:raise ValueError('Đề xuất tách việc không khớp nguồn/bằng chứng đã kiểm chứng')
         from hub.intake_lifecycle import reusable
         with self.store.db() as db:
             consumed = any(not reusable(db, {'payload': json.dumps(m), 'source_result': '{}'}) for m in messages)
         if consumed:
             self.state(run['id'], 'review', {'reason': 'Nguồn tin đã ghi ERP hoặc đang gửi/chưa rõ kết quả; đối soát trước, không tạo lại'})
             return
-        from hub.quote_conversation_evidence import try_prepare as prepare_quote_evidence
-        if agent_decision is None and prepare_quote_evidence(self, run, payload, messages):
+        if payload.get('unified_intake') and agent_decision is None:
+            context=self.context_gate.build(run,messages)
+            if not any(m.get('role')=='customer' for m in context['batch']):
+                self.state(run['id'],'ignored',{'reason':'Cụm chỉ có nhân viên; giữ ngữ cảnh, không tạo đơn từ lời nhân viên','no_action':True})
+                return
+            if not self.agent_loop.scope(run):
+                self.state(run['id'],'review',{'reason':'Chưa bật Agent cho nhóm; không tạo đơn bằng nhánh phiếu riêng'})
+                return
+            from hub.group_original_jpg import enabled as _jpg_group_enabled
+            from hub.psd_samples import sample_only as _psd_sample_only, collect as _collect_psd_sample
+            from hub.text_quantity_policy import text_quantity as _has_text_qty
+            if (
+                _jpg_group_enabled(run['thread_id'])
+                and _psd_sample_only(messages)
+                and not _has_text_qty(messages)
+                and not any(m.get('images') for m in messages if not m.get('recalled') and not m.get('revision') and m.get('origin') == 'customer')
+                and _collect_psd_sample(self, run, messages)
+            ):
+                return
+            self.agent_loop.run(run,messages,staff_images_checked=True)
+            # Preserve independent source/file collection after AI, never a second ERP writer.
+            with self.store.db() as db:
+                design_actions=db.execute("SELECT args FROM agent_actions WHERE run_id=? AND tool='handoff_design_sample' AND state='done'",(run['id'],)).fetchall()
+            for action in design_actions:
+                ids=set(json.loads(action['args'])['source_message_ids'])
+                selected=[m for m in messages if m['message_id'] in ids]
+                if selected and not file_job:self.design_briefs.collect(dict(run, batch_settled=True, agent_admitted=True),selected)
+            from hub.psd_samples import collect as collect_psd_sample
+            if not file_job:collect_psd_sample(self,run,messages)
             return
         from hub.conversation_confirmation import apply as apply_quantity_confirmation
-        if apply_quantity_confirmation(self, run, messages):
+        if not verified_batch and apply_quantity_confirmation(self, run, messages):
             return
         # Reconcile delayed Desktop quote references before any order/context gate.
         from hub.quote_recovery import recover_quotes
@@ -440,10 +590,7 @@ class OrderIntake:
         if agent_decision is None and split_requests(self, run, payload, batch):
             return
         from hub.psd_samples import collect as collect_psd_sample
-        if agent_decision is None and collect_psd_sample(self, run, messages):
-            return
-        from hub.intake_preflight import route
-        if agent_decision is None and route(self, run, messages):
+        if agent_decision is None and not file_job and collect_psd_sample(self, run, messages):
             return
         from hub.intake_models import split, forward_placement
         from hub.order_groups import image_groups
@@ -451,10 +598,12 @@ class OrderIntake:
             return
         if forward_placement(self, run, messages):
             return
-        if self.additions.handle(run,messages):
+        # Verified proposals already isolate the new quantity and its exact sources.
+        # Do not reinterpret them through the legacy addition shortcut.
+        if agent_decision is None and self.additions.handle(run,messages):
             return
-        if agent_decision is None:
-            self.design_briefs.collect(run, messages)
+        if agent_decision is None and not file_job:
+            self.design_briefs.collect(dict(run, batch_settled=True), messages)
         from hub.print_approval import is_reprint
         if any(is_reprint(m['text']) for m in messages):
             self.state(run['id'], 'review', {'reason':'In bù: xử lý bằng hồ sơ chuyển nhóm sản xuất, không tạo đơn mới'})
@@ -463,7 +612,9 @@ class OrderIntake:
         for m in messages:
             quote = m.get('quoted_image')
             if quote and (not quote['resolved'] or not m['images']):
-                raise ValueError('Quoted image unavailable; staff must verify original')
+                from hub.quote_recovery import batch_image_fallback
+                if not batch_image_fallback(self.store, m, messages):
+                    raise ValueError('Quoted image unavailable; staff must verify original')
         from hub.order_groups import image_groups, validate_group_quantity
         groups = image_groups(messages)
         if len(groups) > 1 and agent_decision is None:
@@ -511,7 +662,7 @@ class OrderIntake:
         text = "\n".join(m["text"] for m in messages)
         # Image-only orders wait for supplements before invoking the agent.
         # A timeout or a verified proposal resumes the same durable run.
-        if (agent_decision is None and not image_timeout
+        if (agent_decision is None and not image_timeout and not payload.get('manual_run_request')
                 and any(m.get('images') or m.get('assets') for m in messages)
                 and not re.search(r'\d', text)
                 and time.time() < max(m['timestamp'] for m in messages) + self.engine.intake_management.seconds()):
@@ -519,7 +670,7 @@ class OrderIntake:
             return
         agent_scope = self.agent_loop.scope(run)
         if agent_decision is None and agent_scope and max(m["timestamp"] for m in messages) >= agent_scope.get("enabled_after", float("inf")):
-            if self.agent_loop.run(run, messages):
+            if self.agent_loop.run(run, messages,staff_images_checked=True):
                 return
         if not re.search(r"\d|đặt|đơn|in\b|mẫu|làm|lấy|order", key(text)) and not any(
             m["images"] for m in messages
@@ -531,12 +682,14 @@ class OrderIntake:
         # remains mandatory before this exception can reach ERP.
         image_proposal = bool(agent_decision and agent_decision.action == 'draft_order' and agent_decision.orders)
         caption_images = [m for m in messages if image_only_caption_pending(m, text, image_proposal=image_proposal)]
+        from hub.quoted_files import verified_reference_only
         if len(messages) > 12 or any(
-            (m["attachments"] and m not in caption_images)
-            or any(a["state"] != "ready" for a in m.get("assets", [])) for m in messages
+            ((m["attachments"] and m not in caption_images)
+             or any(a["state"] != "ready" for a in m.get("assets", [])))
+            and not (verified_batch and verified_reference_only(m)) for m in messages
         ):
             raise ValueError("Incomplete media or oversized message batch")
-        if caption_images:
+        if caption_images and not verified_batch:
             if agent_decision is None or agent_decision.action != 'draft_order' or not agent_decision.orders:
                 raise ValueError('Image quantities require an independently verified order proposal')
             from hub.agent_loop import verify_action
@@ -547,25 +700,15 @@ class OrderIntake:
                           {'items': [o.model_dump(mode='json') for o in agent_decision.orders],
                            'source_message_ids': [m['message_id'] for m in messages]})
             payload['image_quantity_verified'] = True
-        with self.store.db() as db:
-            previous = db.execute(
-                "SELECT 1 FROM intake_runs WHERE account=? AND thread_id=? AND id<>? "
-                "AND state NOT IN ('ignored','review','cancelled','waiting_details','superseded') AND created>? "
-                "AND (? IS NULL OR COALESCE(json_extract(payload,'$.model_parent'),'')<>?) "
-                "AND json_extract(payload,'$.sender_key')=? AND date(created,'unixepoch','+7 hours')=date(?,'unixepoch','+7 hours')",
-                (run["account"], run["thread_id"], run["id"], time.time() - self.engine.intake_management.seconds(), payload.get('model_parent'), payload.get('model_parent'), payload["sender_key"], max(m["timestamp"] for m in messages)),
-            ).fetchone()
-        if previous:
-            raise ValueError("Possible continuation or correction of an earlier order")
         images = []
         image_ids = []
         for n, m in enumerate(messages, 1):
             if m["images"]:
                 images.extend(self.store.images(m["images"]))
                 image_ids.append(n)
-        if any(sum(len(m.get('images', [])) for _, m in group) > 2 for group in groups):
+        if not verified_batch and any(sum(len(m.get('images', [])) for _, m in group) > 2 for group in groups):
             raise ValueError("Image group has more than two images; needs review")
-        for group_number, group in enumerate(groups if not payload.get('image_groups_verified') else [], 1):
+        for group_number, group in enumerate(groups if not (payload.get('image_groups_verified') or verified_batch) else [], 1):
             scoped_run = {**run, 'id': run['id'] + ':group:' + str(group_number)} if len(groups) > 1 else run
             if not self.context_gate.check(scoped_run, [m for _, m in group]):
                 if len(groups) > 1:
@@ -594,7 +737,7 @@ class OrderIntake:
             self.state(run["id"], "waiting_details", {"reason": decision.reason})
             return
         ids = set(decision.source_message_ids)
-        if not ids or not ids <= set(range(1, len(messages) + 1)) or len(messages) not in ids:
+        if not ids or not ids <= set(range(1, len(messages) + 1)) or (len(messages) not in ids and not (payload.get("unified_intake") and agent_decision is not None)):
             raise ValueError("Invalid order source IDs")
         from hub.meter_product import apply_meter_lines
         meter_mapped = apply_meter_lines(decision.orders, [messages[i-1] for i in sorted(ids)])
@@ -602,9 +745,18 @@ class OrderIntake:
         meter_mapped |= apply_an_nguyen_sheets(decision.orders, [messages[i-1] for i in sorted(ids)], run['thread_id'])
         from hub.mask_product import apply_mask_product
         mask_mapped = apply_mask_product(decision.orders)
+        from hub.single_slip_policy import verified_slip, normalize_product
+        with self.store.db() as db:
+            verified_single_slip = verified_batch and verified_slip(db,run,payload)
+        if verified_single_slip:
+            for line in decision.orders:normalize_product(line)
         # Owner-approved semantic mapping: verified mask order line -> MATNA.
+        from unicodedata import normalize
+        _norm_vemau = lambda s: re.sub(r"[\u0300-\u036f]", "", normalize("NFKD", (s or "").replace("đ", "d").replace("Đ", "D"))).lower()
+        vemau_allowed = bool(re.search(r"\b(?:(?:len|lam|in|ra|ve)(?:\s+[a-z0-9]+){0,5}\s+mau|ve\s+lai|lam\s+ro\s+net)\b", _norm_vemau(text)))
         for line in decision.orders:
-            if line.ma_san_pham and id(line) not in mask_mapped and not (id(line) in meter_mapped and line.ma_san_pham == "MET") and not re.search(
+            is_vemau = bool(line.ma_san_pham and vemau_allowed and line.ma_san_pham.strip().upper() == "VEMAU")
+            if line.ma_san_pham and not verified_single_slip and id(line) not in mask_mapped and not (id(line) in meter_mapped and line.ma_san_pham == "MET") and not is_vemau and not re.search(
                 r"(?<!\w)" + re.escape(key(line.ma_san_pham)) + r"(?!\w)", key(text)
             ):
                 raise ValueError("Product code is not present in source text")
@@ -615,7 +767,8 @@ class OrderIntake:
             }
             explicit_pieces = piece_quantities(text)
             numbers.update(explicit_pieces)
-            if (explicit_pieces and line.so_luong not in explicit_pieces) or (
+            if id(line) in meter_mapped or (is_vemau and line.so_luong == Decimal("2")):numbers.add(line.so_luong)
+            if (explicit_pieces and id(line) not in meter_mapped and not (is_vemau and line.so_luong == Decimal("2")) and line.so_luong not in explicit_pieces) or (
                 not images and line.so_luong not in numbers
             ):
                 raise ValueError("Số lượng không xuất hiện trong tin nguồn; cần nhân viên kiểm tra")
@@ -625,9 +778,14 @@ class OrderIntake:
         if binding:
             payload["customer_binding"] = binding
         orders = [line.model_dump(mode="json") for line in decision.orders]
+        if payload.get('n8n_expected'):
+            from hub.n8n_erp_dispatch import validate_expected
+            validate_expected(payload['n8n_expected'], orders)
         for line in orders:
             line["ghi_chu_mau_do"] = clean_order_note(line["ghi_chu_mau_do"])
         payload["orders"] = orders
+        if verified_batch:
+            payload["image_groups_verified"] = True
         from hub.drive_order_brief import collect_drive_order
         try:
             collect_drive_order(self.engine, run, payload, messages)
@@ -638,7 +796,7 @@ class OrderIntake:
         payload["request_id"] = ("chatwoot-id:" if binding else "chatwoot-intake:") + run["id"]
         with self.store.db() as db:
             db.execute(
-                "UPDATE intake_runs SET state='awaiting_evidence',payload=? WHERE id=?",
+                "UPDATE intake_runs SET state='awaiting_evidence',result='{}',payload=? WHERE id=?",
                 (json.dumps(payload, ensure_ascii=False), run["id"]),
             )
 
@@ -681,10 +839,22 @@ class OrderIntake:
             if not row:
                 return None
             payload = json.loads(row["payload"])
-            messages = select_sources(db, account, row["thread_id"], payload["messages"])
+            from hub.quantity_review import sources_for_run
+            messages = sources_for_run(db,row,payload)
         if payload.get('addition_fallback'):
             from hub.order_additions import fallback_sources
             messages=fallback_sources(messages)
+        # Evidence sources are reloaded with encoded media; retain the original quote
+        # in captures, but explicitly label the same-batch replacement in the document.
+        from hub.quote_recovery import batch_image_fallback
+        from types import SimpleNamespace
+        encoded_media = SimpleNamespace(images=lambda images: images)
+        for message in messages:
+            quote = message.get('quoted_image')
+            if quote and not quote.get('resolved') and batch_image_fallback(encoded_media, message, messages):
+                message['unavailable_original_quote'] = quote
+                message['quoted_image'] = None
+                message['text'] = message.get('text', '') + "\n[Ảnh trích dẫn cũ chưa lấy được; dùng ảnh khách gửi trong cùng cụm, ID tin: " + ', '.join(message['quote_evidence_fallback']['source_message_ids']) + "]"
         return {"id": row["id"], "messages": messages, "reference": "INTAKE-" + row["id"][:16]}
 
     def evidence_saved(self, account, identity, data):
@@ -701,8 +871,11 @@ class OrderIntake:
                 dict(row), "CẦN NHÂN VIÊN: Chưa tạo đơn vì không lưu được bằng chứng NAS hoặc PNG quá dài."
             )
             return
-        image = decode_image({"mime_type": "image/png", "data": data["image_base64"]})
-        if len(image) > 5_000_000 or not image.startswith(b"\x89PNG\r\n\x1a\n"):
+        try:
+            image = base64.b64decode(data["image_base64"], validate=True)
+        except Exception as exc:
+            raise ValueError("Invalid evidence base64") from exc
+        if not (0 < len(image) <= 5_000_000 and image.startswith(b"\x89PNG\r\n\x1a\n") and b"IEND" in image[-16:]):
             raise ValueError("Invalid evidence PNG")
         with self.store.db() as db:
             row = db.execute(
@@ -711,7 +884,14 @@ class OrderIntake:
             if not row or row["state"] not in {"awaiting_evidence", "evidence_ready"}:
                 raise ValueError("Evidence is not pending")
             payload = json.loads(row["payload"])
-            if set(data["source_message_ids"]) != set(payload["messages"]):
+            expected = payload["messages"]
+            marker = payload.get("text_quantity_order", {})
+            if marker.get("operator_decisions"):
+                expected = marker["evidence_ids"]
+                if not expected or not set(expected).issubset(payload["messages"]):
+                    raise ValueError("Invalid approved evidence selection")
+            received = data["source_message_ids"]
+            if len(received) != len(expected) or set(received) != set(expected):
                 raise ValueError("Evidence source mismatch")
             archive = self.engine.settings.inboxes[account].get("archive_root", "").rstrip("\\/")
             if (
@@ -740,33 +920,34 @@ class OrderIntake:
             # Reader heartbeat expired: wait for a fresh policy, retaining evidence/idempotency.
             return
         payload = json.loads(run["payload"])
-        if time.time() < payload.get('last_timestamp',run.get('created',0)) + self.engine.intake_management.seconds():
+        if not self.quiet_now(run, payload):
             return
         try:
             with self.store.db() as db:
-                messages = select_sources(db, run["account"], run["thread_id"], payload["messages"])
-                newer = db.execute(
-                    "SELECT payload FROM captures WHERE account=? AND thread_id=? "
-                    "AND json_extract(payload,'$.timestamp')>?",
-                    (run['account'], run['thread_id'], max(max(m['timestamp'] for m in messages), payload.get('last_timestamp', 0))),
-                ).fetchall()
-            if any(self.accepts(json.loads(r[0])) for r in newer):
-                # No ERP write started: discard only derived draft/evidence, keep raw source IDs.
-                for field in ('request_id','orders','image_base64','nas_evidence','image_groups_verified','image_timeout_attempted','image_quantity_verified','print_line_sources'):
-                    payload.pop(field,None)
-                with self.store.db() as db:
-                    db.execute("UPDATE intake_runs SET state='waiting_details',payload=?,result=? WHERE id=? AND state='evidence_ready' AND json_extract(payload,'$.submitted_payload') IS NULL",
-                               (json.dumps(payload,ensure_ascii=False),json.dumps({'reason':'Tin mới đến trước lúc ghi ERP; gom lại và tính lại thời gian chờ'}),run['id']))
-                return
+                from hub.quantity_review import sources_for_run
+                messages = sources_for_run(db,run,payload)
+            # A later batch must not erase this settled batch's order/evidence.
+            if payload.get('text_quantity_order'):
+                from hub.text_quantity_orders import validate_quantity_sources
+                if not validate_quantity_sources(payload['text_quantity_order'],messages):
+                    raise ValueError('Customer quantity context changed before submit')
             if payload.get('quote_evidence_order'):
                 from hub.quote_conversation_evidence import load, fingerprint, explicit_extra
-                with self.store.db() as db:
-                    valid = len(messages)==1 and load(db,messages[0]) is not None
                 marker=payload['quote_evidence_order']
+                with self.store.db() as db:
+                    if marker.get('image_hashes'):
+                        import hashlib
+                        hashes=[hashlib.sha256(base64.b64decode(im['data'])).hexdigest() for m in messages for im in m.get('images',[])]
+                        valid=len(messages)==1 and hashes==marker['image_hashes']
+                    else:
+                        valid = len(messages)==1 and load(db,messages[0]) is not None
                 if not valid or marker.get('source_digest')!=fingerprint(messages[0]) or marker.get('quantity')!=explicit_extra(messages[0]):
                     raise ValueError('Quoted order evidence changed; reconcile before submit')
             from hub.conversation_confirmation import apply as apply_quantity_confirmation
-            if apply_quantity_confirmation(self, run, messages):
+            from hub.agent_order_tasks import verified_child
+            with self.store.db() as db:
+                independent_verified=verified_child(db,run,payload,messages,payload.get('orders',[]))
+            if not independent_verified and not payload.get('quote_evidence_order') and not payload.get('text_quantity_order') and apply_quantity_confirmation(self, run, messages):
                 return
             if not self.engine.settings.erp_write or not allowed(policy, self.engine.settings.inboxes[run["account"]]["channel"], payload["group_name"]) or any(not self.accepts(m) for m in messages):
                 raise ValueError("ERP disabled or policy changed")
@@ -778,6 +959,9 @@ class OrderIntake:
                     self.state(run['id'], 'review', {'reason': 'Image group context needs review'})
                     return
             self.engine.erp.require_print_position_support(payload)
+            if payload.get('n8n_expected'):
+                from hub.n8n_erp_dispatch import validate_expected
+                validate_expected(payload['n8n_expected'], payload['orders'])
             binding = self.engine.customer_mappings.get(run["account"], run["thread_id"])
             if binding != payload.get("customer_binding"):
                 raise ValueError("Ánh xạ khách đã thay đổi; cần nhân viên đối chiếu đề xuất cũ")
@@ -797,8 +981,29 @@ class OrderIntake:
             body.update(
                 customer_id=binding["customer_id"], group_id=run["thread_id"], source_account=run["account"]
             )
-        for line in body["orders"]:
-            line["ghi_chu_mau_do"] = clean_order_note(line["ghi_chu_mau_do"])
+        from hub.canavi_slip_policy import GROUPS
+        from hub.single_slip_policy import verified_slip
+        if binding and run["account"] == "zalo-personal-1" and run["thread_id"] in GROUPS:
+            with self.store.db() as db:
+                slip = verified_slip(db, run, payload)
+            if slip:
+                for line in body["orders"]:
+                    notes = (line.get("ghi_chu_mau_do") or "").splitlines()
+                    evidence = [s.partition(":")[2].strip() for s in notes
+                                if s.strip().casefold().startswith("quy cách phiếu:")]
+                    line["canavi_spec"] = evidence[0][:1500] if len(evidence) == 1 else ""
+        # Preserve only verified customer color allocation; no full transcripts.
+        from hub.color_quantity import submission_note
+        marker = payload.get('text_quantity_order', {})
+        batch_items = marker.get('batch_items', [])
+        for index, line in enumerate(body["orders"]):
+            details = batch_items[index]['details'] if batch_items else marker
+            if (marker.get('batch_items') or details.get('sample_default')
+                    or (payload.get('verified_proposal_id') and payload.get('image_groups_verified'))):
+                # These notes were built from immutable source IDs and explicit text.
+                line["ghi_chu_mau_do"] = line.get("ghi_chu_mau_do", "")
+            else:
+                line["ghi_chu_mau_do"] = submission_note(details,line)
         if not self.quiet_now(run, payload):
             return  # Next poll incorporates new sources before any ERP write.
         # Freeze the exact external request for reconciliation before any network write.
@@ -837,3 +1042,4 @@ class OrderIntake:
             "Đã tạo đơn ERP trạng thái Lên mẫu: " + codes + "\nBằng chứng NAS: " + payload["nas_evidence"],
             apply_capture=True,
         )
+

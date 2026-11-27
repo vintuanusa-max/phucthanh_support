@@ -41,7 +41,7 @@ class OrderPrintBridge:
                     from hub.approval_names import approved_jpg_name
                     source=p.get('source',{})
                     for panel in report['panels']:
-                        if panel.get('mode')!='CMYK' or not panel.get('source_icc_preserved'):raise ValueError('JPG không giữ CMYK gốc')
+                        if panel.get('mode')!='CMYK' or not (panel.get('source_icc_preserved') or panel.get('untagged_source') is True):raise ValueError('JPG không giữ CMYK gốc')
                         name=approved_jpg_name(source['asset']['name'],source.get('thread_id'),panel['name'],len(report['panels'])>1)
                         item={'source':p['archive_relative']+'/'+panel['file'],'name':name,'group':p['archive_folder'],'sha256':panel['sha256'],'job_id':identity,'mode':'CMYK','icc_sha256':report['icc_sha256']}
                         if original:
@@ -59,8 +59,11 @@ class OrderPrintBridge:
         return 'scheduled',payload['detail']
 
     def linked(self):
-        from hub.print_linking import resolve
-        with self.e.store.db() as d:return resolve(d)
+        from hub.print_linking import persist
+        with self.e.store.db() as d:
+            persist(d)
+            from hub.print_linking import resolve
+            return resolve(d)
 
     def project(self,oid,entry):
         briefs=[]
@@ -71,6 +74,19 @@ class OrderPrintBridge:
                 for table in ('pet_exports','jpg_exports'):
                     for j in d.execute('SELECT id,state,payload FROM '+table+' WHERE account=? AND json_extract(payload,\'$.brief_id\')=?',(r['account'],r['id'])):
                         q=json.loads(j['payload']);jobs.append({'id':j['id'],'state':j['state'],'kind':table,'reason':q.get('review_reason',''),'files':q.get('files',[]),'archive_relative':q.get('archive_relative',''),'manual':bool(q.get('manual_export'))})
+                        if j['state']=='done':
+                            output_files=[]
+                            if table=='jpg_exports':
+                                from hub.approval_names import approved_jpg_name
+                                panels=q.get('report',{}).get('panels',[])
+                                for panel in panels:
+                                    source=q.get('source',{})
+                                    name=approved_jpg_name(source['asset']['name'],source.get('thread_id'),panel['name'],len(panels)>1)
+                                    output_files.append({'name':name,'path':q['archive_relative']+'/'+panel['file'],'sha256':panel['sha256'],'customer_folder':q['archive_folder']})
+                            else:
+                                for report in q.get('reports',[]):
+                                    output_files.append({'name':report['name'],'path':q['archive_relative']+'/'+report['name'],'sha256':report['sha256'],'customer_folder':q['archive_folder']})
+                            jobs[-1]['output_files']=output_files
                         if table=='jpg_exports' and j['state']=='done':
                             for path in sorted((self.e.artwork_checks.jpg.root/j['id']).glob('*preview.png'))[:8]:
                                 images.append(thumbnail(path.read_bytes(),'output',path.name))
@@ -86,7 +102,7 @@ class OrderPrintBridge:
             standalone=p.get('brief',{}).get('image_context')=='standalone_artwork'
             busy=any(j['state'] in ('scheduled','planning','queued','exporting','publishing','uncertain') for j in jobs)
             briefs.append({'id':r['id'],'title':p['brief']['title'],'conversation':r['conversation'],
-                'sources':[{'name':a['name'],'path':a.get('relative_path',''),'state':a['state']} for a in assets],
+                'sources':[{'name':a['name'],'path':a.get('relative_path',''),'state':a['state'],'sha256':a.get('sha256','')} for a in assets],
                 'jobs':jobs,'images':images[:12],'can_export':not busy and (standalone or len(pdf)==1),
                 'export_hint':'Xuất từ artwork sẵn có; không vẽ lại.' if standalone or len(pdf)==1 else 'Chưa xác định artwork riêng; cần kiểm tra nguồn.',
                 'missing':p['brief'].get('missing_fields',[])})
@@ -100,9 +116,7 @@ class OrderPrintBridge:
         if not r:raise ValueError('Không có liên kết duy nhất giữa đơn và hồ sơ')
         p=json.loads(r['payload']);manual=req['payload'];identity=event_key('erp-pet-manual-v1',req['id'])
         if not self.e.artwork_checks.pet.workflow.current(r['id']):raise ValueError('Hồ sơ đã được thay thế')
-        from hub.order_policy import capture_allowed
-        mapping=self.e.store.thread(account=r['account'],thread_id=r['thread_id']);policy=self.e.order_intake.policy(r['account'])
-        if not mapping or not policy or not capture_allowed(policy,self.e.settings.inboxes[r['account']]['channel'],r['thread_id'],mapping['display_name']):raise ValueError('Nhóm không được phép xử lý')
+
         with self.e.store.db() as d:
             existing=d.execute('SELECT state FROM pet_exports WHERE id=?',(identity,)).fetchone()
             if existing:return identity,existing['state']
@@ -123,12 +137,15 @@ class OrderPrintBridge:
         return identity,'scheduled'
 
     def tick(self):
-        linked=self.linked();root=self.e.settings.erp_url.rstrip('/')+'/api/v1/integrations/zalo/print-files'
+        root=self.e.settings.erp_url.rstrip('/')+'/api/v1/integrations/zalo/print-files'
         with httpx.Client(timeout=15,trust_env=False,headers={'X-Zalo-Token':self.e.settings.erp_token}) as c:
             response=c.get(root+'/requests')
             if response.status_code==404:return # ERP owner has not restarted yet.
             response.raise_for_status()
-            for req in response.json()['items']:
+            requests=response.json()['items']
+            # Staff-triggered commands alone need file/order association. Never rebuild it while idle.
+            linked=self.linked() if requests else {}
+            for req in requests:
                 try:
                     if req['payload'].get('action')=='approve':
                         state,detail=self.approve(req,linked);receipt={'state':'scheduled' if state=='queued' else state,'detail':detail}
@@ -155,10 +172,4 @@ class OrderPrintBridge:
                 c.post(root+'/requests/'+a['id'],json={'state':a['state'],'detail':p.get('detail','')[:1000]}).raise_for_status()
                 p['reported']=True
                 with self.e.store.db() as d:d.execute('UPDATE erp_print_approvals SET payload=? WHERE id=?',(json.dumps(p),a['id']))
-            for oid,entry in linked.items():
-                p=self.project(oid,entry);digest=hashlib.sha256(json.dumps(p,sort_keys=True).encode()).hexdigest()
-                if self.cache.get(oid)==digest:continue
-                response=c.post(root+'/snapshot',json=p)
-                if response.status_code in (404,409):continue # deleted/reassigned, never resurrect.
-                response.raise_for_status();self.cache[oid]=digest
-
+            # File association is maintained by print staff; no automatic ERP snapshot.

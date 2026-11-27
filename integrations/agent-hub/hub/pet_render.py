@@ -18,14 +18,11 @@ def capped_size(width,height,cap=None):
 def code_name(code):
     if not isinstance(code, str) or not code.strip() or len(code) > 100:
         raise ValueError('Thiếu mã đơn PET')
-    ascii_code = ''.join(
-        c for c in unicodedata.normalize('NFD', code.replace('Đ', 'D').replace('đ', 'd'))
-        if not unicodedata.combining(c)
-    )
-    name = re.sub(r'[^A-Za-z0-9_-]', '', ascii_code)
-    if not name or name.upper() in {'CON', 'PRN', 'AUX', 'NUL'} or re.fullmatch(r'(COM|LPT)[0-9]', name, re.I):
-        raise ValueError('Mã đơn không dùng được làm tên file')
-    return name
+    from hub.output_names import short_output_stem
+    try:
+        return short_output_stem(code, max_len=36)
+    except ValueError as exc:
+        raise ValueError('Mã đơn không dùng được làm tên file') from exc
 
 
 def validate_plan(plan, objects, refs):
