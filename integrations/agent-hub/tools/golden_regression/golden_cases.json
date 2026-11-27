@@ -1,0 +1,251 @@
+{
+  "version": "golden-cases-v1",
+  "description": "Verified CANAVI / CANAVI HCM2 golden regression cases for deterministic Quality Audit (Layer 1) and Regression Runner (Layer 2).",
+  "cases": [
+    {
+      "name": "SLOWING1_DUAL",
+      "brief_id": "0f9bbebf179f006747a089c7917a56256e1a6af75545964fa1d56b8c7136840c",
+      "asset": "TB3VB-SLOWING1+2.11.pdf",
+      "sha256": "1ddaa866701a7c491ba6cd28620e68115b4f3b8d135995d169a330ff4e34ca67",
+      "spec": {
+        "mode": "auto",
+        "field_answers": {},
+        "source_ids": ["8526336266379", "8526336401296", "8526336480483", "8526337531085"]
+      },
+      "expected_process": "both",
+      "expected_pet_count": 1,
+      "expected_pet_sizes_cm": [[23.495, 31.327]],
+      "expected_jpg_panels": [
+        {
+          "kind": "meter_fabric",
+          "output_cm": [160.0, 20.0],
+          "white_bg": false,
+          "centered": false
+        }
+      ],
+      "allow_warn_duplicate": true
+    },
+    {
+      "name": "SLOWING2_JPG",
+      "brief_id": "5d64588c3e586786c48c164061dbfb086c73209ee619aff80d3ac9ecb7d65eac",
+      "asset": "TB3VB-SLOWING1+2.11.pdf",
+      "sha256": "1ddaa866701a7c491ba6cd28620e68115b4f3b8d135995d169a330ff4e34ca67",
+      "spec": {
+        "mode": "auto",
+        "field_answers": {},
+        "source_ids": ["8526336266379", "8526336464688", "8526336464746", "8526337531085"]
+      },
+      "expected_process": "sublimation",
+      "expected_pet_count": 0,
+      "expected_pet_sizes_cm": [],
+      "expected_jpg_panels": [
+        {
+          "kind": "bag_panel",
+          "output_cm": [42.0, 47.5],
+          "white_bg": true,
+          "centered": true
+        },
+        {
+          "kind": "meter_fabric",
+          "output_cm": [160.0, 20.0],
+          "white_bg": false,
+          "centered": false
+        }
+      ],
+      "allow_warn_duplicate": true
+    },
+    {
+      "name": "HN_JPG",
+      "brief_id": "1d764efa4750f05a8d65a8f055d85f809970c1a30efcbd1b11195b6be0918439",
+      "asset": "File in CN TDVB-HN.11.ai",
+      "sha256": "ce495d3843c0ce70c41f20ed701929e28a70641af9cf6ffc507e55b7f123881e",
+      "spec": {
+        "mode": "auto",
+        "field_answers": {},
+        "source_ids": ["8498809044036", "8498809044041", "8498809274475"]
+      },
+      "expected_process": "sublimation",
+      "expected_pet_count": 0,
+      "expected_pet_sizes_cm": [],
+      "expected_jpg_panels": [
+        {
+          "kind": "bag_panel",
+          "output_cm": [48.0, 37.5],
+          "white_bg": true,
+          "centered": true
+        },
+        {
+          "kind": "meter_fabric",
+          "output_cm": [160.0, 20.0],
+          "white_bg": false,
+          "centered": false
+        }
+      ],
+      "allow_warn_duplicate": false
+    },
+    {
+      "name": "IBD_DUAL",
+      "brief_id": "d7c58b9e43057168ebe020d13c3e8a60488b0b1882f57c241c69a78f1024f70f",
+      "asset": "File in PET + CN TB3VB-IBD.11.ai",
+      "sha256": "46d9b2a6bf06263b9e2fe4ab701a6018de186826ee07852674d769b60a6659ff",
+      "spec": {
+        "mode": "auto",
+        "field_answers": {},
+        "source_ids": ["8487922005668", "8487922131280", "8487922185579", "8487922723241", "8487922919374", "8487923188277"]
+      },
+      "expected_process": "both",
+      "expected_pet_count": 1,
+      "expected_pet_sizes_cm": [[20.599, 20.007]],
+      "expected_jpg_panels": [
+        {
+          "kind": "bag_panel",
+          "output_cm": [42.0, 41.5],
+          "white_bg": true,
+          "centered": true
+        }
+      ],
+      "allow_warn_duplicate": false
+    },
+    {
+      "name": "VIETTEL_JPG",
+      "brief_id": "e097a7ab7a910f5fb04b89e052f980452c77202bd4734315d6d5262ab925fe90",
+      "asset": "FILE IN CHUYỂN NHIỆT HN1VB-VIETTEL.11.ai",
+      "sha256": "1b99ff51c4be2e041f19a5b3190c65146fcc4c61f861fd8bad6098cbf107270a",
+      "spec": {
+        "mode": "auto",
+        "field_answers": {},
+        "source_ids": ["8511220309984", "8511220395890", "8511220420712", "8511220603712"]
+      },
+      "expected_process": "sublimation",
+      "expected_pet_count": 0,
+      "expected_pet_sizes_cm": [],
+      "expected_jpg_panels": [
+        {
+          "kind": "bag_panel",
+          "output_cm": [37.0, 43.5],
+          "white_bg": true,
+          "centered": false
+        }
+      ],
+      "allow_warn_duplicate": false
+    },
+    {
+      "name": "SHEFIT_STRIPES",
+      "brief_id": "c08b2fd452da974928a2dba5e6680c17a1ed69c6f1d5fae346a90f7e0a2fd071",
+      "asset": "TDVB-SHEFIT.11.ai",
+      "sha256": "b587ff316a98ce227304f75f6262f3ee33031371da3e26a63a89b644404739ba",
+      "spec": {
+        "mode": "auto",
+        "field_answers": {},
+        "source_ids": ["8505250583765", "8505250714048", "8505250808934", "8505250825205"]
+      },
+      "expected_process": "sublimation",
+      "expected_pet_count": 0,
+      "expected_pet_sizes_cm": [],
+      "expected_jpg_panels": [
+        {
+          "kind": "bag_panel",
+          "output_cm": [48.0, 95.0],
+          "white_bg": false,
+          "centered": false
+        }
+      ],
+      "allow_warn_duplicate": false
+    },
+    {
+      "name": "THO_STRIPES",
+      "brief_id": "1e74d07da8eac4d0820c444d5088bfacca09b02e2542a621f5ede39b05031474",
+      "asset": "File in CN TDVB-THO.11.ai",
+      "sha256": "81f3ab3b8f77e9e44ff09de318b6adcfa378af4186084dc13c4bb7df6d855a30",
+      "spec": {
+        "mode": "auto",
+        "field_answers": {},
+        "source_ids": ["8471830131893", "8471830237574", "8471830473192", "8471830473197"]
+      },
+      "expected_process": "sublimation",
+      "expected_pet_count": 0,
+      "expected_pet_sizes_cm": [],
+      "expected_jpg_panels": [
+        {
+          "kind": "bag_panel",
+          "output_cm": [49.0, 83.0],
+          "white_bg": false,
+          "centered": false
+        }
+      ],
+      "allow_warn_duplicate": false
+    },
+    {
+      "name": "JC_JOINED",
+      "brief_id": "53ee2929b4142ff9f46033ff35a163dc232f1039b3f2da6925677c6bd5eb5f2c",
+      "asset": "File in CN HN1VB-JC.11.ai",
+      "sha256": "449e80dbbdd3b341a3fd8111f5638ff9bc470e84d46c402fab36dab8e5a6c3fa",
+      "spec": {
+        "mode": "auto",
+        "field_answers": {},
+        "source_ids": ["8498809044037", "8498809120477", "8498809747378"]
+      },
+      "expected_process": "sublimation",
+      "expected_pet_count": 0,
+      "expected_pet_sizes_cm": [],
+      "expected_jpg_panels": [
+        {
+          "kind": "bag_panel",
+          "output_cm": [33.0, 91.0],
+          "white_bg": true,
+          "centered": false
+        }
+      ],
+      "allow_warn_duplicate": false
+    },
+    {
+      "name": "NOTCH_PET",
+      "brief_id": "634c5399391fcefe89882226ee3cbf8300362b24d1e44a150a474d0c5a23811a",
+      "asset": "FILE IN PET TB1VB-NOTCH.11.ai",
+      "sha256": "a810696d1924479f7683f142527b0bbd4a3d920ec861a6b1265a99adc43e4a4b",
+      "spec": {
+        "mode": "pet",
+        "field_answers": {},
+        "source_ids": ["8526090369089", "8526090463053", "8526090661254", "8526090703779"]
+      },
+      "expected_process": "pet",
+      "expected_pet_count": 1,
+      "expected_pet_sizes_cm": [[29.583, 32.326]],
+      "expected_jpg_panels": [],
+      "allow_warn_duplicate": false
+    },
+    {
+      "name": "TQ11_PET",
+      "brief_id": "1ade526f8a18279c061e6fb096b00b22594135a6d553bd3fe9c83d6b20fac933",
+      "asset": "File in PET TB1VĐ-TQ.11.ai",
+      "sha256": "b99f0dbadf19cdf87c1feb406fbbd5e633ab48c2b8acf3d8c613edf6b5373ea2",
+      "spec": {
+        "mode": "pet",
+        "field_answers": {},
+        "source_ids": ["8529618489915", "8529695685873", "8529695704409", "8529695732068"]
+      },
+      "expected_process": "pet",
+      "expected_pet_count": 1,
+      "expected_pet_sizes_cm": [[25.51, 19.008]],
+      "expected_jpg_panels": [],
+      "allow_warn_duplicate": false
+    },
+    {
+      "name": "ATHUC_XMCP_PET",
+      "raster_pet": true,
+      "brief_id": "50c6158a511208889085514ec3c345af0539e660cebe0288a8aaf9ff85a12cc7",
+      "asset": "Logo và slogan XMCP  3D form ngang.png",
+      "sha256": "5d64397b6304114203f88c039177bd34fbb35c01ab6bfd919ddafc02a5bfa8fb",
+      "spec": {
+        "mode": "pet",
+        "field_answers": {},
+        "source_ids": ["8531927099176", "8531927464266", "8531929352360", "8531930297318"]
+      },
+      "expected_process": "pet",
+      "expected_pet_count": 1,
+      "expected_pet_sizes_cm": [[7.5, 2.752]],
+      "expected_jpg_panels": [],
+      "allow_warn_duplicate": false
+    }
+  ]
+}

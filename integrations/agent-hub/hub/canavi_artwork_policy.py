@@ -25,6 +25,19 @@ def review_note(plan, verification):
         explanation = face.get('dimension_explanation')
         if explanation:
             lines.append(str(face.get('side', '')) + ': ' + explanation)
+    for item in plan.get('deduplicated_panels', []):
+        if isinstance(item, dict) and item.get('reason'):
+            lines.append('Gộp trùng JPG: ' + item['reason'])
+    for item in plan.get('deduplicated_faces', []):
+        if isinstance(item, dict) and item.get('reason'):
+            lines.append('Gộp trùng PET: ' + item['reason'])
+    for item in plan.get('sibling_duplicate_panels', []):
+        if isinstance(item, dict) and item.get('reason'):
+            lines.append('Đối chiếu trùng hồ sơ song song: ' + item['reason'])
+    from hub.quality_audit import format_audit_note
+    audit_note = format_audit_note(plan.get('quality_audit'))
+    if audit_note:
+        lines.append(audit_note)
     if not lines:
         return ''
     return '\nĐỐI CHIẾU KÍCH THƯỚC / CỮ — CHỜ CHỦ XƯỞNG DUYỆT:\n' + '\n'.join(lines)
