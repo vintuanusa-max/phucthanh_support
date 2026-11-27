@@ -1,3 +1,4 @@
+from fleet_paths import archive as fleet_archive, local as fleet_local, ascii_model
 import base64,json,subprocess,re,hashlib
 from pathlib import Path
 from urllib.parse import quote
@@ -10,7 +11,7 @@ def sync_native(client,cfg):
  if not job:return 'native_idle'
  try:
   raw=base64.b64decode(read_asset(cfg['archive']['root'],job['asset']))
-  folder=Path(__file__).parent/'native-output'/job['id']
+  folder=fleet_local(job,Path(__file__).parent/'native-output'/job['id'])
   if job['state']=='scan_running':data={'scan':inspect(raw,job['asset']['name'],folder,allow_pdf_reimport=True)}
   else:
    efaces=job.get('editable_faces') or []
@@ -18,9 +19,9 @@ def sync_native(client,cfg):
    multi_editable=len(efaces)>1 and bool(re.fullmatch(r'[0-9a-f]{64}',evid))
    result=export(raw,job['asset']['name'],folder,job['candidates'],job['candidate_ids'],job['width_cm'],'artwork',save_ai=not multi_editable)
    root=Path(cfg['archive']['root']).resolve();group=job['asset']['relative_path'].replace('\\','/').split('/')[0]
-   model=re.sub(r'[^\w-]','',job['asset']['name'].rsplit('.',1)[0])
+   model=ascii_model(job['asset']['name'].rsplit('.',1)[0])
    if multi_editable:
-    dest=(root/group/'DESIGNER'/model/'versions'/evid/(model+'_EDITABLE.ai')).resolve()
+    dest=(fleet_archive(job,root/group/'DESIGNER'/model/'versions'/evid)/(model+'_EDITABLE.ai')).resolve()
     if root not in dest.parents:raise ValueError('Editable archive outside root')
     if not dest.exists():
      ai_path=export_combined_ai(raw,job['asset']['name'],folder,efaces,'combined')
@@ -32,7 +33,7 @@ def sync_native(client,cfg):
    elif result.get('ai'):
     side=job.get('side','front')
     if not re.fullmatch(r'[a-z0-9_]+',side):raise ValueError('Invalid side')
-    dest=(root/group/'DESIGNER'/model/'versions'/job['id']/(model+'_'+side+'_editable.ai')).resolve()
+    dest=(fleet_archive(job,root/group/'DESIGNER'/model/'versions'/job['id'])/(model+'_'+side+'_editable.ai')).resolve()
     if root not in dest.parents:raise ValueError('Editable archive outside root')
     dest.parent.mkdir(parents=True,exist_ok=True);ai=Path(result['ai']).read_bytes()
     if dest.exists():
