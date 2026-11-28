@@ -375,7 +375,7 @@ def region_candidates(scan,regions):
    cl,ct,cr,cb=c['bounds'];area=(cr-cl)*(ct-cb)
    if c.get('kind')=='GroupItem' and area<=w*h*.35:continue
    overlap=max(0,min(cr,x1)-max(cl,x0))*max(0,min(ct,y1)-max(cb,y0))
-   if 0<area<w*h*.80 and area<=region_area*1.6 and overlap/area>=.70:
+   if 0<area<w*h*.80 and area<=region_area*2.2 and (overlap/area>=.55 or (region_area>0 and overlap/region_area>=.75 and overlap/area>=.45)):
     border_candidates.append(c)
     if c.get('kind')=='GroupItem':broad_group_ids.add(cid)
   pool=list({c['id']:c for c in pool+border_candidates}.values())

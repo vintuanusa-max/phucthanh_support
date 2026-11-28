@@ -206,6 +206,26 @@ class PetLateDimensionsTests(unittest.TestCase):
                     sp = json.loads(d.execute('SELECT payload FROM native_selections WHERE id=?', (sid,)).fetchone()[0])
                     self.assertEqual(sp['auto_status'], 'review')
 
+    def test_region_candidates_retains_complete_logo_group_above_35_pct_artboard(self):
+        from hub.native_auto import region_candidates
+
+        # Mirror 333TPTrade_NON_2Mau.ai on A4: logo group 0.1 is 40.5% of A4 with 0.6964 overlap against box_2d
+        scan = {
+            'artboards': [{'index': 0, 'bounds': [0.0, 0.0, 595.2756, -841.8898]}],
+            'candidates': [
+                {'id': '0.0', 'kind': 'GroupItem', 'bounds': [0.0, 0.0, 595.2756, -841.8898], 'width_cm': 21.0, 'height_cm': 29.7},
+                {'id': '0.0.0', 'kind': 'PathItem', 'bounds': [0.0, 0.0, 595.2756, -841.8898], 'width_cm': 21.0, 'height_cm': 29.7},
+                {'id': '0.1', 'kind': 'GroupItem', 'bounds': [78.6667, -167.1039, 517.3333, -630.1734], 'width_cm': 15.48, 'height_cm': 16.34},
+                {'id': '0.1.1', 'kind': 'CompoundPathItem', 'bounds': [150.0, -200.0, 200.0, -250.0], 'width_cm': 1.76, 'height_cm': 1.76},
+                {'id': '0.1.24', 'kind': 'CompoundPathItem', 'bounds': [422.5, -474.7, 517.3, -621.2], 'width_cm': 3.35, 'height_cm': 5.17},
+            ],
+        }
+        regions = [{'artboard_index': 0, 'box': [0.232, 0.196, 0.768, 0.725]}]
+        kept_ids = [c['id'] for c in region_candidates(scan, regions)]
+        self.assertIn('0.1', kept_ids)
+        self.assertNotIn('0.0', kept_ids)
+        self.assertNotIn('0.0.0', kept_ids)
+
 
 if __name__ == '__main__':
     unittest.main()
