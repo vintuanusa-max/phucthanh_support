@@ -21,13 +21,17 @@ def validate(spec,context,images):
     authorized=bool(src.get('role')=='customer' and quote.strip() and quote in src.get('text',''))
     if spec['mode']=='edit' and (not authorized or not spec['changes'] or not spec.get('evidence')):raise ValueError('Chỉnh ảnh thiếu lời khách và bằng chứng nguồn')
     if spec['mode']=='preserve' and spec['changes']:raise ValueError('Phương án vừa giữ nguyên vừa thay đổi; cần kiểm tra')
+    image_sources=set(images)
+    for value in images.values():
+        if isinstance(value,(tuple,list)) and len(value)>=2 and isinstance(value[1],dict) and value[1].get('message_id'):
+            image_sources.add(value[1]['message_id'])
     for e in spec.get('evidence',[]):
         q=e.get('quote','');sid=e.get('source_id')
         if not q.strip():raise ValueError('Empty instruction evidence')
         if e.get('kind')=='text':
             if sid not in messages or q not in messages[sid].get('text',''):raise ValueError('Ghi chú không thuộc hội thoại nguồn')
         elif e.get('kind')=='image':
-            if sid not in images:raise ValueError('Ghi chú không thuộc ảnh nguồn')
+            if sid not in image_sources:raise ValueError('Ghi chú không thuộc ảnh nguồn')
         else:raise ValueError('Invalid instruction evidence kind')
     return authorized
 

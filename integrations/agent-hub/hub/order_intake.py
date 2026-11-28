@@ -550,6 +550,9 @@ class OrderIntake:
         if consumed:
             self.state(run['id'], 'review', {'reason': 'Nguồn tin đã ghi ERP hoặc đang gửi/chưa rõ kết quả; đối soát trước, không tạo lại'})
             return
+        # Reconcile delayed Desktop quote references before unified_intake or legacy gates.
+        from hub.quote_recovery import recover_quotes
+        recover_quotes(self.store, messages)
         if payload.get('unified_intake') and agent_decision is None:
             context=self.context_gate.build(run,messages)
             if not any(m.get('role')=='customer' for m in context['batch']):
@@ -583,9 +586,6 @@ class OrderIntake:
         from hub.conversation_confirmation import apply as apply_quantity_confirmation
         if not verified_batch and apply_quantity_confirmation(self, run, messages):
             return
-        # Reconcile delayed Desktop quote references before any order/context gate.
-        from hub.quote_recovery import recover_quotes
-        recover_quotes(self.store, messages)
         from hub.intake_requests import split_requests
         if agent_decision is None and split_requests(self, run, payload, batch):
             return

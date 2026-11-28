@@ -25,6 +25,20 @@ def test_resolve_client_quote_scoped_and_latest_revision():
     d.execute('INSERT INTO captures VALUES(?,?,?,?,?)',('a','g','old',1,json.dumps({**old,'revision':1})))
     assert resolve_quote_db(d,q) is None
 
+def test_resolve_quoted_file_scoped_and_requires_ready_file_asset():
+    import sqlite3
+    from hub.order_additions import resolve_quoted_file_db
+    d=sqlite3.connect(':memory:');d.execute('CREATE TABLE captures(account,thread_id,message_id,revision,payload)')
+    ready_asset={'id':'a'*64,'name':'File in PET non 88.ai','kind':'file','state':'ready','relative_path':'Q/2026-11/originals/a.ai','sha256':'b'*64,'size':123,'mime_type':'application/octet-stream','error':''}
+    old=msg('[File Zalo: File in PET non 88.ai]','old_f',client_message_id='c_file',assets=[ready_asset]);old['timestamp']=10
+    d.execute('INSERT INTO captures VALUES(?,?,?,?,?)',('a','g','old_f',0,json.dumps(old)))
+    q=msg('Cho làm giúp mẫu này',quoted_file={'message_id':'0','client_message_id':'c_file','sender_id':'s','resolved':False,'name':'','error':'quote_file_source_missing'})
+    assert resolve_quoted_file_db(d,q)['message_id']=='old_f'
+    wrong_sender=msg('Cho làm giúp mẫu này',quoted_file={'message_id':'0','client_message_id':'c_file','sender_id':'other','resolved':False})
+    assert resolve_quoted_file_db(d,wrong_sender) is None
+    d.execute('INSERT INTO captures VALUES(?,?,?,?,?)',('a','g','old_f',1,json.dumps({**old,'revision':1})))
+    assert resolve_quoted_file_db(d,q) is None
+
 def test_mixed_sender_or_inconsistent_totals_blocked():
     with pytest.raises(ValueError):addition_request([msg('In thêm 70c'),{**msg('1070c','b'),'sender_id':'other'}])
     with pytest.raises(ValueError):addition_request([msg('In thêm 70c'),msg('1070c','b'),msg('1100c','c')])
