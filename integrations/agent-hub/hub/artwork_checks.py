@@ -42,6 +42,8 @@ def known_native_pet(db, brief, p, bid):
     requested_mode = (p.get('owner_export_spec') or {}).get('mode')
     if requested_mode not in (None, '', 'auto', 'pet'):
         return False
+    if brief.get('ai_technique_inspect') and requested_mode != 'pet':
+        return False
     asset = p.get('asset') or {}
     fname = asset.get('name', '')
     sha = asset.get('sha256')
@@ -537,7 +539,8 @@ class ArtworkChecks:
                             defer_selection=True
                     result['comparison']=self.compare(parts,refs,brief,defer_selection=defer_selection,target_process=target_proc)
                     if defer_selection:result['comparison']['selection_stage']='verified_native_candidates'
-                    if target_proc=='pet' and result['comparison'].get('print_process') in ('other','unknown',None):
+                    has_conflict = any(f.get('kind') == 'conflict' for f in result['comparison'].get('findings', []))
+                    if target_proc=='pet' and result['comparison'].get('print_process') in ('other','unknown',None) and not has_conflict and not brief.get('ai_technique_inspect'):
                         result['comparison']['print_process']='pet'
                         if brief.get('n8n_export_kind')!='both':
                             brief['n8n_export_kind']='export_pet'
@@ -555,6 +558,9 @@ class ArtworkChecks:
                             result['comparison']['print_process']='sublimation'
                             result['comparison']['process_basis']='explicit'
                             brief['n8n_export_kind']='export_jpg'
+                    if brief.get('ai_technique_inspect'):
+                        _cp = result['comparison'].get('print_process')
+                        brief['n8n_export_kind'] = {'pet': 'export_pet', 'sublimation': 'export_jpg', 'both': 'both'}.get(_cp, 'auto')
                 requested=p.get('owner_export_spec',{}).get('mode','auto')
                 if requested!='auto':
                     result['comparison']['print_process']='pet' if requested=='pet' else 'sublimation'
@@ -623,7 +629,7 @@ Trả JSON: file_role (artwork|maket|production_slip|mixed|unknown), same_design
         prompt += '\nXác định print_process=pet|sublimation|other|unknown dựa vào phiếu, lời khách và nguồn cùng mẫu. sublimation là in chuyển nhiệt/in mét trên vải; pet là in màng PET. Không suy từ tên nhóm hoặc đuôi file. Nếu chưa rõ hoặc mâu thuẫn thì unknown và ghi missing_fields. process_sources dẫn ID bằng chứng thuộc allowed_sources. Phân biệt artwork là trang in thật với maket có hình sản phẩm/đường đo; không đánh dấu artwork cho toàn trang mockup.'
         from hub.export_routing import routing_policy
         policy=routing_policy(brief or {})
-        prompt += '\nOWNER_ROUTING_POLICY='+policy+'. jpg_group: JPG theo nhóm. slip_process: giữ kỹ thuật đúng phiếu. default_pet: mặc định PET/TIFF từng vị trí; NHƯNG nếu phiếu lệnh sản xuất hoặc maket ghi rõ kỹ thuật in (như "in chuyển nhiệt", "sublimation", "in mét") thì BẮT BUỘC chọn print_process=sublimation, process_basis=explicit, process_sources dẫn ảnh phiếu/nguồn đó và process_reason trích rõ chữ kỹ thuật in trên phiếu; hoặc khi khách yêu cầu rõ / maket nón đáp ứng quy tắc cap_pattern bên dưới. Không suy từ tên file, nhóm hoặc nội dung nhân viên. customer_requests_sublimation=true chỉ khi yêu cầu khẳng định hiện tại, không phải phủ định/hỏi giá/nhắc đơn khác. sublimation_message_id và sublimation_quote phải dẫn nguyên văn câu khách trong source_texts. Còn lại false và chuỗi rỗng. Số vị trí in theo artwork và yêu cầu, không theo số ảnh; mỗi vị trí một file, giữ đủ chi tiết trắng. Ảnh mờ cần phục hồi trước khi tách nền, không dùng phóng pixel thay phục hồi.'
+        prompt += '\nOWNER_ROUTING_POLICY='+policy+'. jpg_group: JPG theo nhóm. slip_process: giữ kỹ thuật đúng phiếu. default_pet: mặc định PET/TIFF từng vị trí; NHƯNG phải đọc kỹ chữ ghi chú bên trong file (`technical.text`) và hình ảnh trên `file_page:N` (vd "FILE IN PET", "CHỈ IN LOGO", "IN CHUYỂN NHIỆT", "IN FULL NÓN/MẠC/KÉT"): nếu phiếu lệnh, maket hoặc ghi chú/nội dung BÊN TRONG file ghi rõ kỹ thuật in (như "in chuyển nhiệt", "sublimation", "in mét", "FILE IN PET") thì BẮT BUỘC chọn print_process tương ứng (`sublimation` hoặc `pet`), process_basis=`explicit`, process_sources dẫn `file_page:1`/`file_metadata` hoặc ảnh nguồn đó và process_reason trích rõ chữ kỹ thuật in; nếu tên file hoặc tin chat mâu thuẫn với chữ kỹ thuật in rõ ràng bên trong file thì đặt `print_process=unknown`, `process_basis=unknown` và ghi finding `kind=conflict`. Không tự suy kỹ thuật chỉ từ tên nhóm hay tên file đơn thuần. customer_requests_sublimation=true chỉ khi yêu cầu khẳng định hiện tại của khách, không phải phủ định/hỏi giá/nhắc đơn khác. sublimation_message_id và sublimation_quote phải dẫn nguyên văn câu khách trong source_texts. Còn lại false và chuỗi rỗng. Số vị trí in theo artwork và yêu cầu, không theo số ảnh; mỗi vị trí một file, giữ đủ chi tiết trắng. Ảnh mờ cần phục hồi trước khi tách nền, không dùng phóng pixel thay phục hồi.'
         prompt+='\nQUY TẮC CHỦ XƯỞNG CHO NÓN: logo/chi tiết nhỏ in cục bộ một vị trí trên nón => PET, process_basis=cap_logo. Hình/hoa văn phủ toàn nón hoặc trên mạc/két => sublimation, process_basis=cap_pattern. Ưu tiên kỹ thuật ghi rõ trong phiếu/tin khách: process_basis=explicit. Nếu hình không đủ rõ thì process_basis=unknown. Không suy từ chữ nón đơn thuần. process_sources phải dẫn ID ảnh maket/file_page thực sự quan sát hoặc tin yêu cầu có trong allowed_sources, không để trống khi chọn kỹ thuật. Ghi process_reason mô tả phần hình nào làm căn cứ. Ngang 3cm cao tương ứng nghĩa là giữ tỷ lệ, không đòi khách nhập chiều cao. Không lấy ảnh sản phẩm làm artwork xuất; lấy logo từ file thiết kế.'
         parts=list(parts)+[{'text':json.dumps({'source_texts':[{'message_id':x['message_id'],'role':x.get('role'),'text':x.get('text','')} for x in (brief or {}).get('sources',[])]},ensure_ascii=False)}]
         schema_refs = refs[:24] if len(refs) > 24 else refs

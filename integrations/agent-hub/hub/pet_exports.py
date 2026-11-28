@@ -87,6 +87,7 @@ class PetExports:
             if (created < self.since and not json.loads(row['payload']).get('owner_instruction')) or d.execute('SELECT 1 FROM pet_exports WHERE id=?', (row['id'],)).fetchone():
                 return
         if comparison.get('print_process') in ('sublimation','other') and brief.get('n8n_export_kind') != 'both' and comparison.get('print_process') != 'both':return
+        if brief.get('ai_technique_inspect') and comparison.get('print_process') not in ('pet', 'both') and brief.get('n8n_export_kind') != 'both':return
         p = json.loads(row['payload'])
         folder_name = p['asset']['relative_path'].replace('\\', '/').split('/')[0]
         # Only archives already admitted by ArtworkChecks/capture policy.

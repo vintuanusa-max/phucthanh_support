@@ -312,7 +312,14 @@ class JpgExports:
   from hub.manual_export import is_manual
   generic=folder not in ('CANAVI','CANAVI HCM2') and not is_manual(self.store,row['brief_id'])
   if comparison.get('print_process') in ('pet','other') and brief.get('n8n_export_kind') != 'both' and comparison.get('print_process') != 'both':return
-  if generic and not original_jpg_allowed(comparison):return
+  generic_review_reason=None
+  if generic and not original_jpg_allowed(comparison):
+   if comparison.get('print_process') not in ('sublimation','both') and brief.get('n8n_export_kind')!='both':return
+   generic_review_reason=(
+    'File chuyển nhiệt có kèm ghi chú/maket trên trang (file_role='+str(comparison.get('file_role'))+'); cần tách cụm artwork hoặc duyệt trước khi xuất JPG'
+    if comparison.get('file_role')!='artwork'
+    else 'Chưa đủ căn cứ/cùng mẫu để tự xuất JPG chuyển nhiệt'
+   )
   with self.store.db() as d:
    created=d.execute('SELECT created FROM design_briefs WHERE id=?',(row['brief_id'],)).fetchone()[0]
    if (created<self.since and not p0.get('owner_instruction')) or d.execute('SELECT 1 FROM jpg_exports WHERE id=?',(row['id'],)).fetchone():return
@@ -331,6 +338,8 @@ class JpgExports:
    p={'source':p0,'conversation':p0['conversation'],'archive_folder':folder,'brief_id':row['brief_id'],'private':True}
    d.execute('INSERT INTO jpg_exports VALUES(?,?,?,?,?)',(row['id'],row['account'],'planning',json.dumps(p),time.time()))
   try:
+   if generic_review_reason:
+    self.review(row['id'],p,generic_review_reason);return
    mixed_scope=any(re.search(r'in\s+lưới|screen[ -]?print',str(part.get('text','')),re.I) for part in parts)
    if comparison.get('same_design')!='proposed' or mixed_scope:
     p['scope_review']=recheck_jpg_scope(self.ask,parts,refs,comparison)
