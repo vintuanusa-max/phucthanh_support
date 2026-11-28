@@ -412,6 +412,112 @@ class DailyBugFixTests(unittest.TestCase):
         self.assertEqual(files[0]['source'], rel + '/TDVB-SOIVIET.11_position_1.tiff')
         self.assertEqual(files[0]['name'], 'TDVB-SOIVIET.11_P1_LLM.tiff')
 
+    def test_small_spare_ask_is_khach_hoi_and_zero_ai(self):
+        import time
+        from unittest.mock import patch
+        from hub.intake_text_conversation import conversation_state, is_small_spare_ask
+        from hub.intake_semantic_fallback import candidate
+
+        # Positive spare-ask phrases -> Khách hỏi, not semantic fallback candidate
+        for phrase in (
+            'cho chú xin 2 cái về chú ép cho khách',
+            'cho em xin 1 cái về ép thử',
+            'cho a xin 2 miếng pet dư',
+            'xin hai cái về thử nhé',
+            'cho em xin lại 3 tấm',
+        ):
+            self.assertTrue(is_small_spare_ask(phrase), phrase)
+            msgs = [{'origin': 'customer', 'direction': 'incoming', 'text': phrase}]
+            self.assertEqual(conversation_state(msgs), 'Khách hỏi', phrase)
+            self.assertFalse(candidate(msgs), phrase)
+
+        # Even when paired with a reference photo inquiry in the same batch, no AI call
+        paired = [
+            {'origin': 'customer', 'direction': 'incoming', 'text': 'hoa mẫu này còn miếng pet nào ko', 'images': ['img1']},
+            {'origin': 'customer', 'direction': 'incoming', 'text': 'cho chú xin 2 cái về chú ép cho khách'},
+        ]
+        self.assertFalse(candidate(paired))
+
+        # Real order / large qty / explicit order verb / staff qty prompt MUST NOT be skipped
+        for order_phrase in (
+            'cho em 2 cái',
+            'cho em 300 cái',
+            'cho chú xin 200 cái',
+            'cho chú xin in 2 cái',
+            'cho chú xin đặt 2 cái',
+            'cho chú xin làm 2 cái',
+            'cho chú xin 2 cái, in thêm 50 cái',
+            'in thêm cho anh 12 nón trắng này cả nhà nhé',
+            'hoa hôm nay cho ép sớm dùm chú 500 mẫu này thứ 5 chú giao cho khách nha',
+        ):
+            self.assertFalse(is_small_spare_ask(order_phrase), order_phrase)
+            msgs = [{'origin': 'customer', 'direction': 'incoming', 'text': order_phrase}]
+            self.assertIsNone(conversation_state(msgs), order_phrase)
+            self.assertTrue(candidate(msgs), order_phrase)
+
+        staff_prompted = [
+            {'origin': 'staff', 'direction': 'incoming', 'text': 'Chú in mấy cái ạ?'},
+            {'origin': 'customer', 'direction': 'incoming', 'text': 'cho chú xin 2 cái'},
+        ]
+        self.assertIsNone(conversation_state(staff_prompted))
+        self.assertTrue(candidate(staff_prompted))
+
+        # End-to-end order_intake.analyze: Chu Tien message -> ignored + display_state='Khách hỏi' + 0 AI calls
+        tests_dir = str(Path(__file__).resolve().parent)
+        if tests_dir not in sys.path:
+            sys.path.insert(0, tests_dir)
+        from test_hub import setup as hub_setup
+        from hub.models import Capture
+
+        with tempfile.TemporaryDirectory() as tmp:
+            t = Path(tmp)
+            s, store, engine = hub_setup.__wrapped__(t)
+            s.inboxes['wa-1'].update(
+                channel='zalo',
+                capture_enabled=True,
+                archive_root=str(t / 'archive'),
+                order_intake={'enabled_after': time.time() - 3600},
+            )
+            store.bind('wa-1', 'g8685154270493951569', 'In Chuyen Nhiet Chu Tien', 10, 83)
+            engine.order_intake.sync_policy('wa-1', {'zalo_internal_members': ['Đàm Hoaaa']})
+            cap = Capture(
+                account='wa-1',
+                thread_id='g8685154270493951569',
+                message_id='m_chutien_1',
+                sender='Tạ Duy Tiến',
+                display_name='In Chuyen Nhiet Chu Tien',
+                text='cho chú xin 2 cái về chú ép cho khách',
+                timestamp=time.time() - 2500,
+            )
+            m = store.capture(cap)
+            store.finish(m, 'done')
+            run_id = 'run-chutien-spare-1'
+            payload = {
+                'messages': ['m_chutien_1'],
+                'group_name': 'In Chuyen Nhiet Chu Tien',
+                'sender': 'Tạ Duy Tiến',
+                'sender_key': 'k_ct',
+                'unified_intake': True,
+                'first_timestamp': time.time() - 2500,
+                'last_timestamp': time.time() - 2500,
+            }
+            with store.db() as d:
+                d.execute(
+                    "INSERT INTO intake_runs(id,account,thread_id,conversation,state,payload,result,created) VALUES(?,?,?,?,?,?,?,?)",
+                    (run_id, 'wa-1', 'g8685154270493951569', 83, 'queued', json.dumps(payload), '{}', time.time()),
+                )
+            run = dict(id=run_id, account='wa-1', thread_id='g8685154270493951569', conversation=83, payload=json.dumps(payload))
+            msgs = [(1, cap.model_dump(mode='json'))]
+            with patch.object(engine.order_intake.agent_loop, 'run', side_effect=AssertionError('AI must not be called')):
+                engine.order_intake.analyze(run, payload, msgs)
+            with store.db() as d:
+                row = d.execute('SELECT state, result FROM intake_runs WHERE id=?', (run_id,)).fetchone()
+            self.assertEqual(row['state'], 'ignored')
+            res = json.loads(row['result'])
+            self.assertEqual(res['display_state'], 'Khách hỏi')
+            self.assertTrue(res['no_action'])
+            self.assertFalse(res['image_read'])
+
 
 if __name__ == '__main__':
     unittest.main()
