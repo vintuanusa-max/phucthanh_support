@@ -294,6 +294,124 @@ class DailyBugFixTests(unittest.TestCase):
             self.assertFalse(rep['panels'][0]['source_icc_preserved'])
             self.assertEqual(rep['panels'][0]['mode'], 'CMYK')
 
+    def test_native_selection_result_clears_stale_error_on_success(self):
+        import io
+        import time
+        from PIL import Image
+
+        tests_dir = str(Path(__file__).resolve().parent)
+        if tests_dir not in sys.path:
+            sys.path.insert(0, tests_dir)
+        from test_hub import setup as hub_setup
+        from hub import native_selection as ns
+
+        with tempfile.TemporaryDirectory() as tmp:
+            t = Path(tmp)
+            _, store, engine = hub_setup.__wrapped__(t)
+            ns.init(engine)
+            sha = hashlib.sha256(b'ai-bytes').hexdigest()
+            sid = 'sel-stale-err-1'
+            im = Image.new('RGBA', (118, 118), (0, 0, 0, 0))
+            for x in range(20, 100):
+                for y in range(20, 100):
+                    im.putpixel((x, y), (10, 20, 30, 255))
+            buf = io.BytesIO()
+            im.save(buf, format='PNG', dpi=(300, 300))
+            png_b64 = __import__('base64').b64encode(buf.getvalue()).decode()
+
+            payload = {
+                'brief_id': 'brief-1',
+                'conversation': 10,
+                'thread_id': 'g123',
+                'asset': {'name': 'MauTest.ai', 'sha256': sha, 'relative_path': 'KIM OANH/2026-11/MauTest.ai'},
+                'side': 'position_1',
+                'candidate_ids': ['0.1'],
+                'candidates': [{'id': '0.1', 'bounds': [0, 100, 100, 0]}],
+                'width_cm': 1.0,
+                'note': 'Artwork test stale error clear',
+                'font_warnings': [],
+                'error': 'Kết quả Illustrator không hợp lệ: Không ghi đè kết quả khác',
+            }
+            engine.artwork_checks.pet.workflow.current = lambda bid, p=None: True
+            with store.db() as d:
+                d.execute(
+                    "INSERT INTO native_selections VALUES(?,?,?,?,?,?)",
+                    (sid, 'brief-1', 'wa-1', 'render_running', json.dumps(payload), time.time()),
+                )
+            res = ns.result(engine, 'wa-1', sid, {'png': png_b64})
+            self.assertEqual(res['state'], 'png_ready')
+            with store.db() as d:
+                row = d.execute('SELECT state, payload FROM native_selections WHERE id=?', (sid,)).fetchone()
+            self.assertEqual(row['state'], 'png_ready')
+            saved = json.loads(row['payload'])
+            self.assertNotIn('error', saved)
+
+    def test_fast_worker_lock_check_and_state_write_resilience(self):
+        from unittest.mock import patch
+
+        mod = _load_worker_module('fast_worker_test', 'fast_worker.py')
+        if mod is None:
+            self.skipTest('fast_worker.py not found')
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / 'approval-state.json'
+            state_path.write_text('{"time": 0}', encoding='utf-8')
+            old_t = 1000.0
+            import os
+            os.utime(state_path, (old_t, old_t))
+            with patch.object(mod, 'STATE', state_path), patch.object(mod, '_lock_held', return_value=False), patch.object(mod.subprocess, 'Popen') as popen:
+                mod.ensure_started(['cfg1.json'])
+                popen.assert_called_once()
+            with patch.object(mod, 'STATE', state_path), patch.object(mod, '_lock_held', return_value=True), patch.object(mod.subprocess, 'Popen') as popen:
+                mod.ensure_started(['cfg1.json'])
+                popen.assert_not_called()
+
+            # Verify state write OSError does not crash main loop
+            cfg_path = Path(tmp) / 'cfg.json'
+            cfg_path.write_text('{"account": "wa-1"}', encoding='utf-8')
+            with patch.object(mod, 'STATE', state_path), \
+                 patch.object(mod, 'cycle', side_effect=[{'time': 1}, KeyboardInterrupt()]), \
+                 patch.object(Path, 'replace', side_effect=PermissionError('locked')), \
+                 patch.object(mod.time, 'sleep'), \
+                 patch('sys.argv', ['fast_worker.py', '--config', str(cfg_path)]):
+                with self.assertRaises(KeyboardInterrupt):
+                    mod.main()
+
+    def test_pet_designer_folder_matches_worker_ascii_model_with_dots(self):
+        from hub.fleet_attempts import output_relative
+        from hub.pet_render import designer_folder_name
+
+        fleet_paths = _load_worker_module('fleet_paths_test', 'fleet_paths.py')
+        self.assertEqual(designer_folder_name('TDVB-SOIVIET.11'), 'TDVB-SOIVIET11')
+        if fleet_paths is not None:
+            self.assertEqual(designer_folder_name('TDVB-SOIVIET.11'), fleet_paths.ascii_model('TDVB-SOIVIET.11'))
+            self.assertEqual(designer_folder_name('333TPTrade_NON_2Mau'), fleet_paths.ascii_model('333TPTrade_NON_2Mau'))
+        rel = output_relative(
+            {
+                'id': 'a' * 64,
+                'archive_folder': 'CANAVI HCM2',
+                'plan': {'order_code': 'TDVB-SOIVIET.11'},
+                'source': {},
+            },
+            'pet-exports',
+            'local-backup',
+        )
+        self.assertEqual(
+            rel,
+            f"CANAVI HCM2/DESIGNER/TDVB-SOIVIET11/versions/{'a' * 64}/worker-results/local-backup",
+        )
+        sha = hashlib.sha256(b'tiff').hexdigest()
+        files = files_for(
+            'pet_exports',
+            {
+                'archive_relative': rel,
+                'source': {'thread_id': 'g2671966061008128194', 'asset': {'name': 'File in PET TDVB-SOIVIET.11.ai'}},
+                'plan': {'order_code': 'TDVB-SOIVIET.11'},
+                'reports': [{'name': 'TDVB-SOIVIET.11_position_1.tiff', 'sha256': sha}],
+            },
+        )
+        self.assertEqual(files[0]['source'], rel + '/TDVB-SOIVIET.11_position_1.tiff')
+        self.assertEqual(files[0]['name'], 'TDVB-SOIVIET.11_P1_LLM.tiff')
+
 
 if __name__ == '__main__':
     unittest.main()

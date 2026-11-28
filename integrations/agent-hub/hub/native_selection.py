@@ -196,5 +196,7 @@ def _result(e,account,identity,data):
    else:
     d.execute("INSERT OR IGNORE INTO pet_exports VALUES(?,?,'queued',?,?)",(identity,account,json.dumps(pp),time.time()))
     p['pet_job_id']=identity;state='png_ready'
+  if not data.get('error'):
+   p.pop('error',None)
   d.execute('UPDATE native_selections SET state=?,payload=? WHERE id=?',(state,json.dumps(p),identity))
  return {'state':state}

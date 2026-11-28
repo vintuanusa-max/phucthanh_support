@@ -12,7 +12,7 @@ from hub.print_api import tracked
 from hub.workflow_rules import pet_profile, hat_face_policy
 from hub.workflow_control import WorkflowControl
 from hub.workflow_errors import describe, issue
-from hub.pet_render import code_name, validate_plan, render_face
+from hub.pet_render import code_name, designer_folder_name, validate_plan, render_face
 
 
 def white_preflight(source,parts):
@@ -255,7 +255,7 @@ Chỉ pass nếu đúng mã/phiên bản, đủ logo/chữ/chi tiết từng m�
             mark(p, pet_reasons)
             version = str(p.get('source', {}).get('editable_version_id') or identity)
             if not re.fullmatch(r'[0-9a-f]{64}', version):raise ValueError('Invalid editable version')
-            p['archive_relative'] = p['archive_folder'] + '/DESIGNER/' + code_name(p.get('archive_model') or p['plan']['order_code']) + '/versions/' + version
+            p['archive_relative'] = p['archive_folder'] + '/DESIGNER/' + designer_folder_name(p.get('archive_model') or p['plan']['order_code']) + '/versions/' + version
             if p.get('_fleet_archive_relative'):p['archive_relative']=p['_fleet_archive_relative']
             self.save(identity, p, 'publishing')
             content = 'PET — FILE TỰ XUẤT CHỜ DUYỆT NỘI BỘ\nMã: ' + p['plan']['order_code'] + '\n'

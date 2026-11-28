@@ -25,6 +25,20 @@ def code_name(code):
         raise ValueError('Mã đơn không dùng được làm tên file') from exc
 
 
+def designer_folder_name(code):
+    """Match worker fleet_paths.ascii_model() for DESIGNER/<model>/versions/... folders."""
+    if not isinstance(code, str) or not code.strip() or len(code) > 100:
+        raise ValueError('Thiếu mã đơn PET')
+    folded = ''.join(
+        c for c in unicodedata.normalize('NFD', code.replace('Đ', 'D').replace('đ', 'd'))
+        if not unicodedata.combining(c)
+    )
+    name = re.sub(r'[^A-Za-z0-9_-]', '', folded)
+    if not name or name.upper() in {'CON', 'PRN', 'AUX', 'NUL'} or re.fullmatch(r'(COM|LPT)[0-9]', name, re.I):
+        raise ValueError('Mã đơn không dùng được làm thư mục')
+    return name
+
+
 def validate_plan(plan, objects, refs):
     if plan.get('is_pet') is not True or plan.get('issues'):
         raise ValueError('; '.join(plan.get('issues', [])) or 'Chưa xác nhận in PET')
